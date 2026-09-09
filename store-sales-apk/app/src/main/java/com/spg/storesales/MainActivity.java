@@ -8,7 +8,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
 import android.util.Base64;
@@ -23,10 +22,8 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -37,8 +34,10 @@ import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -51,6 +50,8 @@ public class MainActivity extends Activity {
     private static final String PREF_ENV = "encrypted_env";
     private static final String KEY_ALIAS = "partner_center_credentials";
     private static final long ACQ_INTERVAL_MS = 3300L;
+    private static final String DEV_CENTER = "https://manage.devcenter.microsoft.com";
+    private static final String MY_BASE = DEV_CENTER + "/v1.0/my/";
 
     private TextView dailyValue;
     private TextView monthlyValue;
@@ -69,9 +70,8 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         setContentView(buildUi());
-        if (prefs.contains(PREF_ENV)) {
-            refreshReport();
-        } else {
+        if (prefs.contains(PREF_ENV)) refreshReport();
+        else {
             status.setText("İlk kullanım: Drive’daki microsoft.env dosyasını seçin.");
             refreshButton.setEnabled(false);
         }
@@ -87,8 +87,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(20), dp(28), dp(20), dp(32));
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
 
-        TextView title = text("Microsoft Store Sales", 26, true, "#111827");
-        root.addView(title);
+        root.addView(text("Microsoft Store Sales", 26, true, "#111827"));
         TextView subtitle = text("Partner Center • Gross sales USD", 14, false, "#6B7280");
         subtitle.setPadding(0, dp(4), 0, dp(20));
         root.addView(subtitle);
@@ -134,10 +133,9 @@ public class MainActivity extends Activity {
         importParams.topMargin = dp(10);
         root.addView(importButton, importParams);
 
-        TextView note = text("Kimlik bilgileri APK içinde bulunmaz. Seçtiğiniz env dosyası Android Keystore ile bu cihazda şifrelenir. Satışlar iade/chargeback düşülmemiş brüt purchasePriceUSDAmount toplamıdır.", 12, false, "#6B7280");
+        TextView note = text("Kimlik bilgileri APK içinde bulunmaz. Seçtiğiniz env dosyası Android Keystore ile bu cihazda şifrelenir. Tüm Partner Center uygulama sayfaları taranır. Satışlar iade/chargeback düşülmemiş brüt purchasePriceUSDAmount toplamıdır.", 12, false, "#6B7280");
         note.setPadding(dp(2), dp(18), dp(2), 0);
         root.addView(note);
-
         return scroll;
     }
 
@@ -201,9 +199,8 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode != REQ_ENV || resultCode != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
-        try {
-            getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        } catch (Exception ignored) {}
+        try { getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION); }
+        catch (Exception ignored) {}
 
         try (InputStream in = getContentResolver().openInputStream(uri)) {
             String env = readAll(in);
@@ -231,8 +228,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 String env = decrypt(prefs.getString(PREF_ENV, ""));
-                Map<String, String> creds = parseEnv(env);
-                Report report = fetchReport(creds);
+                Report report = fetchReport(parseEnv(env));
                 runOnUiThread(() -> showReport(report));
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -249,10 +245,9 @@ public class MainActivity extends Activity {
         String tenantId = require(creds, "PARTNER_CENTER_TENANT_ID");
         String token = getToken(tenantId, clientId, clientSecret);
 
-        JSONObject appsJson = getJson("https://manage.devcenter.microsoft.com/v1.0/my/applications", token, false);
-        JSONArray apps = appsJson.optJSONArray("value");
-        if (apps == null) apps = appsJson.optJSONArray("Value");
-        if (apps == null) apps = new JSONArray();
+        JSONArray apps = fetchAllApplications(token);
+        final int appCount = apps.length();
+        runOnUiThread(() -> status.setText(appCount + " uygulama bulundu. Satışlar taranıyor…"));
 
         Calendar cal = Calendar.getInstance();
         int year = cal.get(Calendar.YEAR);
@@ -262,18 +257,12 @@ public class MainActivity extends Activity {
         String endDate = month + "/" + day + "/" + year;
         String isoToday = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
 
-        double monthlySales = 0d;
-        double dailySales = 0d;
-        long monthlyAcq = 0L;
-        long dailyAcq = 0L;
-        String monthlyLeaderName = "—";
-        String monthlyLeaderId = "—";
-        long monthlyLeaderAcq = -1L;
-        String dailyLeaderName = "—";
-        String dailyLeaderId = "—";
-        long dailyLeaderAcq = -1L;
+        double monthlySales = 0d, dailySales = 0d;
+        long monthlyAcq = 0L, dailyAcq = 0L;
+        String monthlyLeaderName = "—", monthlyLeaderId = "—";
+        String dailyLeaderName = "—", dailyLeaderId = "—";
+        long monthlyLeaderAcq = -1L, dailyLeaderAcq = -1L;
 
-        final int appCount = apps.length();
         for (int i = 0; i < appCount; i++) {
             JSONObject app = apps.optJSONObject(i);
             if (app == null) continue;
@@ -284,22 +273,18 @@ public class MainActivity extends Activity {
             final int index = i + 1;
             runOnUiThread(() -> status.setText("Uygulamalar taranıyor: " + index + "/" + appCount));
 
-            double appSales = 0d;
-            double appDailySales = 0d;
-            long appAcq = 0L;
-            long appDailyAcq = 0L;
+            double appSales = 0d, appDailySales = 0d;
+            long appAcq = 0L, appDailyAcq = 0L;
             int skip = 0;
 
-            for (int page = 0; page < 20; page++) {
-                String url = "https://manage.devcenter.microsoft.com/v1.0/my/analytics/appacquisitions" +
+            for (int page = 0; page < 1000; page++) {
+                String url = MY_BASE + "analytics/appacquisitions" +
                         "?applicationId=" + enc(appId) +
                         "&startDate=" + enc(startDate) +
                         "&endDate=" + enc(endDate) +
                         "&top=10000&skip=" + skip;
                 JSONObject salesJson = getJson(url, token, true);
-                JSONArray values = salesJson.optJSONArray("Value");
-                if (values == null) values = salesJson.optJSONArray("value");
-                if (values == null) values = new JSONArray();
+                JSONArray values = arrayFrom(salesJson);
 
                 for (int j = 0; j < values.length(); j++) {
                     JSONObject row = values.optJSONObject(j);
@@ -313,7 +298,6 @@ public class MainActivity extends Activity {
                         appDailyAcq += qty;
                     }
                 }
-
                 if (values.length() < 10000) break;
                 skip += 10000;
             }
@@ -350,23 +334,68 @@ public class MainActivity extends Activity {
         return r;
     }
 
+    private JSONArray fetchAllApplications(String token) throws Exception {
+        JSONArray all = new JSONArray();
+        Set<String> seenIds = new HashSet<>();
+        String nextUrl = MY_BASE + "applications?top=100";
+        int safety = 0;
+
+        while (nextUrl != null && !nextUrl.isEmpty() && safety++ < 1000) {
+            JSONObject page = getJson(nextUrl, token, false);
+            JSONArray values = arrayFrom(page);
+            for (int i = 0; i < values.length(); i++) {
+                JSONObject app = values.optJSONObject(i);
+                if (app == null) continue;
+                String id = firstNonEmpty(app.optString("id", ""), app.optString("applicationId", ""));
+                if (id.isEmpty() || seenIds.add(id)) all.put(app);
+            }
+
+            String next = firstNonEmpty(
+                    page.optString("@nextLink", ""),
+                    page.optString("nextLink", ""),
+                    page.optString("NextLink", ""));
+            if (!next.isEmpty()) {
+                nextUrl = resolveMyUrl(next);
+                continue;
+            }
+
+            int total = page.optInt("totalCount", page.optInt("TotalCount", all.length()));
+            if (total > all.length()) nextUrl = MY_BASE + "applications?skip=" + all.length() + "&top=100";
+            else nextUrl = null;
+        }
+
+        if (safety >= 1000) throw new Exception("Uygulama sayfalama güvenlik sınırı aşıldı");
+        return all;
+    }
+
+    private JSONArray arrayFrom(JSONObject json) {
+        JSONArray arr = json.optJSONArray("value");
+        if (arr == null) arr = json.optJSONArray("Value");
+        return arr == null ? new JSONArray() : arr;
+    }
+
+    private String resolveMyUrl(String next) {
+        String n = next.trim();
+        if (n.startsWith("http://") || n.startsWith("https://")) return n;
+        while (n.startsWith("/")) n = n.substring(1);
+        if (n.startsWith("v1.0/my/")) return DEV_CENTER + "/" + n;
+        if (n.startsWith("my/")) return DEV_CENTER + "/v1.0/" + n;
+        return MY_BASE + n;
+    }
+
     private String getToken(String tenantId, String clientId, String clientSecret) throws Exception {
-        URL url = new URL("https://login.microsoftonline.com/" + enc(tenantId) + "/oauth2/token");
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL("https://login.microsoftonline.com/" + enc(tenantId) + "/oauth2/token").openConnection();
         conn.setConnectTimeout(15000);
         conn.setReadTimeout(20000);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
         conn.setRequestProperty("Accept", "application/json");
-
         String body = "grant_type=client_credentials" +
                 "&client_id=" + enc(clientId) +
                 "&client_secret=" + enc(clientSecret) +
                 "&resource=" + enc("https://manage.devcenter.microsoft.com");
-        try (OutputStream out = conn.getOutputStream()) {
-            out.write(body.getBytes(StandardCharsets.UTF_8));
-        }
+        try (OutputStream out = conn.getOutputStream()) { out.write(body.getBytes(StandardCharsets.UTF_8)); }
         int code = conn.getResponseCode();
         String response = readResponse(conn, code);
         conn.disconnect();
@@ -393,7 +422,8 @@ public class MainActivity extends Activity {
             if (code >= 200 && code < 300) return new JSONObject(body);
             if (code == 429 && attempt < 4) {
                 long wait = 3500L;
-                try { wait = Math.max(wait, Long.parseLong(retryAfter) * 1000L + 300L); } catch (Exception ignored) {}
+                try { wait = Math.max(wait, Long.parseLong(retryAfter) * 1000L + 300L); }
+                catch (Exception ignored) {}
                 Thread.sleep(wait);
                 continue;
             }
@@ -404,9 +434,7 @@ public class MainActivity extends Activity {
 
     private void waitForRateLimit() throws InterruptedException {
         long elapsed = System.currentTimeMillis() - lastAcquisitionRequestAt;
-        if (lastAcquisitionRequestAt > 0 && elapsed < ACQ_INTERVAL_MS) {
-            Thread.sleep(ACQ_INTERVAL_MS - elapsed);
-        }
+        if (lastAcquisitionRequestAt > 0 && elapsed < ACQ_INTERVAL_MS) Thread.sleep(ACQ_INTERVAL_MS - elapsed);
     }
 
     private String readResponse(HttpURLConnection conn, int code) throws Exception {
@@ -432,9 +460,7 @@ public class MainActivity extends Activity {
             if (eq <= 0) continue;
             String key = s.substring(0, eq).trim();
             String value = s.substring(eq + 1).trim();
-            if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
-                value = value.substring(1, value.length() - 1);
-            }
+            if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) value = value.substring(1, value.length() - 1);
             map.put(key, value);
         }
         return map;
@@ -446,27 +472,22 @@ public class MainActivity extends Activity {
         return value.trim();
     }
 
-    private String enc(String value) throws Exception {
-        return URLEncoder.encode(value, "UTF-8");
-    }
+    private String enc(String value) throws Exception { return URLEncoder.encode(value, "UTF-8"); }
 
     private String encrypt(String plaintext) throws Exception {
         SecretKey key = getOrCreateKey();
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key);
-        byte[] iv = cipher.getIV();
-        byte[] encrypted = cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8));
-        return Base64.encodeToString(iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP);
+        return Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":" +
+                Base64.encodeToString(cipher.doFinal(plaintext.getBytes(StandardCharsets.UTF_8)), Base64.NO_WRAP);
     }
 
     private String decrypt(String stored) throws Exception {
         String[] parts = stored.split(":", 2);
         if (parts.length != 2) throw new Exception("Kayıtlı kimlik bilgisi bozuk");
-        byte[] iv = Base64.decode(parts[0], Base64.NO_WRAP);
-        byte[] encrypted = Base64.decode(parts[1], Base64.NO_WRAP);
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), new GCMParameterSpec(128, iv));
-        return new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
+        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), new GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));
+        return new String(cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), StandardCharsets.UTF_8);
     }
 
     private SecretKey getOrCreateKey() throws Exception {
@@ -474,9 +495,7 @@ public class MainActivity extends Activity {
         keyStore.load(null);
         if (!keyStore.containsAlias(KEY_ALIAS)) {
             KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
-            generator.init(new KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
-                    KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+            generator.init(new KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                     .setRandomizedEncryptionRequired(true)
@@ -493,7 +512,7 @@ public class MainActivity extends Activity {
         monthlyMeta.setText("Aylık acquisition: " + r.monthlyAcquisitions + " • " + r.appCount + " uygulama");
         leaderValue.setText(r.monthlyLeaderName + " • " + r.monthlyLeaderAcquisitions + " acquisition");
         leaderMeta.setText("ID: " + r.monthlyLeaderId + "\nBugünün lideri: " + r.dailyLeaderName + " • " + r.dailyLeaderId);
-        setBusy(false, "Son güncelleme: " + r.generatedAt);
+        setBusy(false, "Son güncelleme: " + r.generatedAt + " • " + r.appCount + " uygulama tarandı");
     }
 
     private void setBusy(boolean busy, String message) {
@@ -515,16 +534,10 @@ public class MainActivity extends Activity {
     }
 
     private static class Report {
-        double monthlySales;
-        double dailySales;
-        long monthlyAcquisitions;
-        long dailyAcquisitions;
-        String monthlyLeaderName;
-        String monthlyLeaderId;
-        long monthlyLeaderAcquisitions;
-        String dailyLeaderName;
-        String dailyLeaderId;
-        long dailyLeaderAcquisitions;
+        double monthlySales, dailySales;
+        long monthlyAcquisitions, dailyAcquisitions;
+        String monthlyLeaderName, monthlyLeaderId, dailyLeaderName, dailyLeaderId;
+        long monthlyLeaderAcquisitions, dailyLeaderAcquisitions;
         int appCount;
         String generatedAt;
     }

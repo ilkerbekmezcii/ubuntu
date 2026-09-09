@@ -1,0 +1,47 @@
+name: Tiwoo Live E2E Audit
+
+on:
+  push:
+    branches: [tiwoo-e2e]
+    paths:
+      - 'tiwoo-e2e.mjs'
+      - '.github/workflows/tiwoo-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tiwoo-live-e2e
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TIWOO_TEST_USERNAME: ${{ secrets.TIWOO_TEST_USERNAME }}
+      TIWOO_TEST_PASSWORD: ${{ secrets.TIWOO_TEST_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm init -y >/dev/null 2>&1
+          npm install --no-save playwright@1.55.0 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+
+      - name: Audit live Tiwoo
+        shell: bash
+        run: node tiwoo-e2e.mjs
+
+      - name: Upload public audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiwoo-live-audit
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 1

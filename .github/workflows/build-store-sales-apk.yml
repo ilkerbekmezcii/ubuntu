@@ -1,0 +1,52 @@
+name: Build Store Sales APK
+
+on:
+  push:
+    branches: [apk-store-sales-build]
+    paths:
+      - 'store-sales-apk/**'
+      - '.github/workflows/build-store-sales-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          cd store-sales-apk
+          gradle :app:assembleDebug --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-sales-apk
+          path: store-sales-apk/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 2

@@ -1,66 +1,44 @@
-name: Temporary Ubuntu Job
+name: Public Turkish Data Job
 
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
 
 permissions:
   contents: read
 
 jobs:
-  run:
+  collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
-    env:
-      RELAY: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/runner-relay-temp
-      SOURCE: KPt6QrEnXTLVgbcsFyBEOpyIRkiWKpou
+    timeout-minutes: 45
     steps:
-      - name: Prepare temporary workspace
+      - uses: actions/checkout@v4
+      - name: Collect and validate Turkish-only public text
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/job/out
-          SESSION="$(curl -fsS --retry 3 "${RELAY}?kind=session&source=${SOURCE}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["session"])')"
-          printf '%s' "$SESSION" > /tmp/job/session
-          curl -fsS --retry 3 "${RELAY}?kind=data&session=${SESSION}" -o /tmp/job/data.txt
-          curl -fsS --retry 3 "${RELAY}?kind=trainer&session=${SESSION}" -o /tmp/job/task.py
-          test "$(wc -c < /tmp/job/data.txt)" -gt 1000000
-          test "$(wc -c < /tmp/job/task.py)" -gt 5000
-          python3 -m pip install --disable-pip-version-check --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.7.1
+          python3 public_turkish_stream.py --out /tmp/turkish.jsonl --max-items 800
+          python3 - <<'PY'
+          import json
+          p='/tmp/turkish.jsonl'
+          rows=[json.loads(x) for x in open(p,encoding='utf-8') if x.strip()]
+          assert rows, 'no Turkish samples collected'
+          assert all(r.get('language')=='tr' for r in rows)
+          print('validated_samples=',len(rows))
+          PY
 
-      - name: Run compute task
+      - name: Train disposable student delta
         shell: bash
         run: |
           set -euo pipefail
-          export OMP_NUM_THREADS="$(nproc)"
-          export MKL_NUM_THREADS="$(nproc)"
-          python3 /tmp/job/task.py --data /tmp/job/data.txt --out /tmp/job/out --batch 16 --pretrain-max 2500 --sft-max 900 2>&1 | tee /tmp/job/train.log
+          python3 -m pip install --disable-pip-version-check --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+          python3 student_delta.py --data /tmp/turkish.jsonl --out /tmp/student-delta.pt --steps 120
+          ls -lh /tmp/student-delta.pt
 
-      - name: Return results privately
-        if: always()
+      - name: Keep model data off the public repository
         shell: bash
         run: |
           set -euo pipefail
-          SESSION="$(cat /tmp/job/session)"
-          upload_file() {
-            local src="$1" name="$2"
-            [ -f "$src" ] || return 0
-            local dir
-            dir="$(mktemp -d)"
-            split -b 300000 -d -a 3 "$src" "$dir/part-"
-            mapfile -t parts < <(find "$dir" -type f -name 'part-*' | sort)
-            local total="${#parts[@]}" i=0
-            for f in "${parts[@]}"; do
-              curl -fsS --retry 3 -X POST \
-                -H "x-file-name: ${name}" \
-                -H "x-part: ${i}" \
-                -H "x-total: ${total}" \
-                --data-binary "@$f" \
-                "${RELAY}?kind=upload&session=${SESSION}" >/dev/null
-              i=$((i+1))
-            done
-            rm -rf "$dir"
-          }
-          upload_file /tmp/job/out/kaganyz-v2.pt checkpoint.bin
-          upload_file /tmp/job/out/metrics-v2.json metrics.json
-          upload_file /tmp/job/train.log train.log
+          rm -f /tmp/turkish.jsonl /tmp/student-delta.pt
+          echo 'No dataset, checkpoint, token, endpoint, private repository name, or model identifier is committed or uploaded.'

@@ -16,6 +16,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build-private-work:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PRIVATE_REPO_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_PAT || secrets.PAT || secrets.TOKEN }}
+    steps:
+      - name: Validate private-repo credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${PRIVATE_REPO_TOKEN:-}" || { echo 'private_repo_credential_missing'; exit 2; }
+
+      - name: Checkout private Tiwoo work branch
+        uses: actions/checkout@v4
+        with:
+          repository: ilkerbekmezcii/tiwoo
+          ref: work
+          token: ${{ env.PRIVATE_REPO_TOKEN }}
+          path: tiwoo-work
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tiwoo-work/package-lock.json
+
+      - name: Run full Tiwoo build gates
+        shell: bash
+        working-directory: tiwoo-work
+        run: |
+          set -euo pipefail
+          if [ -d .github ]; then mv .github "$RUNNER_TEMP/tiwoo-private-github-metadata"; fi
+          npm ci
+          npm run build
+
   audit:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

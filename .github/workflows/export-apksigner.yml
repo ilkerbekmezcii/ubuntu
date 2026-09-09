@@ -1,0 +1,33 @@
+name: Export Android APK Signer
+
+on:
+  push:
+    branches: [apk-store-sales-build]
+    paths:
+      - '.github/workflows/export-apksigner.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: android-actions/setup-android@v3
+      - name: Install build tools
+        shell: bash
+        run: sdkmanager 'build-tools;35.0.0'
+      - name: Prepare signer tools
+        shell: bash
+        run: |
+          mkdir -p /tmp/apksigner-tools/lib
+          cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" /tmp/apksigner-tools/
+          cp "$ANDROID_HOME/build-tools/35.0.0/lib/apksigner.jar" /tmp/apksigner-tools/lib/
+          cp "$ANDROID_HOME/build-tools/35.0.0/zipalign" /tmp/apksigner-tools/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apksigner-tools
+          path: /tmp/apksigner-tools
+          retention-days: 1

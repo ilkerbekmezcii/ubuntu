@@ -14,12 +14,12 @@ permissions:
 
 concurrency:
   group: continuous-turkish-training
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   train:
     runs-on: ubuntu-latest
-    timeout-minutes: 285
+    timeout-minutes: 55
     env:
       STORE_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/training-store-v3
       OIDC_AUD: turkish-training-store
@@ -37,7 +37,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 public_turkish_stream.py --out /tmp/turkish.jsonl --max-items 1200
+          python3 public_turkish_stream.py --out /tmp/turkish.jsonl --max-items 250
           python3 - <<'PY'
           import json
           rows=[json.loads(x) for x in open('/tmp/turkish.jsonl',encoding='utf-8') if x.strip()]
@@ -79,7 +79,7 @@ jobs:
           set -euo pipefail
           export OMP_NUM_THREADS="$(nproc)"
           export MKL_NUM_THREADS="$(nproc)"
-          python3 train100m.py --data /tmp/turkish.jsonl --work /tmp/trainwork --seconds 13800
+          python3 train100m.py --data /tmp/turkish.jsonl --work /tmp/trainwork --seconds 1200
 
       - name: Publish checkpoint privately
         shell: bash

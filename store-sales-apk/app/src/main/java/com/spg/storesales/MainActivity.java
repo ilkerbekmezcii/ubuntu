@@ -1,12 +1,15 @@
 package com.spg.storesales;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -46,8 +49,10 @@ import javax.crypto.spec.GCMParameterSpec;
 
 public class MainActivity extends Activity {
     private static final int REQ_ENV = 4101;
-    private static final String PREFS = "store_sales_secure";
-    private static final String PREF_ENV = "encrypted_env";
+    private static final int REQ_NOTIFICATIONS = 4102;
+    private static final String PREFS = SalesMonitorService.PREFS;
+    private static final String PREF_ENV = SalesMonitorService.PREF_ENV;
+    private static final String PREF_MONITOR = SalesMonitorService.PREF_MONITOR;
     private static final String KEY_ALIAS = "partner_center_credentials";
     private static final long ACQ_INTERVAL_MS = 3300L;
     private static final String DEV_CENTER = "https://manage.devcenter.microsoft.com";
@@ -62,6 +67,7 @@ public class MainActivity extends Activity {
     private TextView status;
     private Button importButton;
     private Button refreshButton;
+    private Button monitorButton;
     private SharedPreferences prefs;
     private volatile long lastAcquisitionRequestAt = 0L;
 
@@ -70,6 +76,10 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         setContentView(buildUi());
+        syncMonitorButton();
+
+        if (prefs.getBoolean(PREF_MONITOR, false) && prefs.contains(PREF_ENV)) startMonitorService();
+
         if (prefs.contains(PREF_ENV)) refreshReport();
         else {
             status.setText("İlk kullanım: Drive’daki microsoft.env dosyasını seçin.");
@@ -127,16 +137,59 @@ public class MainActivity extends Activity {
         refreshButton.setOnClickListener(v -> refreshReport());
         root.addView(refreshButton, buttonParams());
 
+        monitorButton = button("5 dk satış bildirimi");
+        monitorButton.setOnClickListener(v -> toggleMonitor());
+        LinearLayout.LayoutParams monitorParams = buttonParams();
+        monitorParams.topMargin = dp(10);
+        root.addView(monitorButton, monitorParams);
+
         importButton = button("microsoft.env Seç / Değiştir");
         importButton.setOnClickListener(v -> chooseEnvFile());
         LinearLayout.LayoutParams importParams = buttonParams();
         importParams.topMargin = dp(10);
         root.addView(importButton, importParams);
 
-        TextView note = text("Kimlik bilgileri APK içinde bulunmaz. Seçtiğiniz env dosyası Android Keystore ile bu cihazda şifrelenir. Tüm Partner Center uygulama sayfaları taranır. Satışlar iade/chargeback düşülmemiş brüt purchasePriceUSDAmount toplamıdır.", 12, false, "#6B7280");
+        TextView note = text("Kimlik bilgileri APK içinde bulunmaz. Seçtiğiniz env dosyası Android Keystore ile bu cihazda şifrelenir. Tüm Partner Center uygulama sayfaları taranır. 5 dakikalık takip açıkken kalıcı bir sistem bildirimi görünür; yeni gross satış geldiğinde ayrıca bildirim gönderilir.", 12, false, "#6B7280");
         note.setPadding(dp(2), dp(18), dp(2), 0);
         root.addView(note);
         return scroll;
+    }
+
+    private void toggleMonitor() {
+        boolean enabled = prefs.getBoolean(PREF_MONITOR, false);
+        if (enabled) {
+            prefs.edit().putBoolean(PREF_MONITOR, false).apply();
+            stopService(new Intent(this, SalesMonitorService.class));
+            syncMonitorButton();
+            Toast.makeText(this, "5 dakikalık satış takibi kapatıldı.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (!prefs.contains(PREF_ENV)) {
+            Toast.makeText(this, "Önce microsoft.env dosyasını seçin.", Toast.LENGTH_LONG).show();
+            chooseEnvFile();
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
+        }
+        prefs.edit().putBoolean(PREF_MONITOR, true).apply();
+        startMonitorService();
+        syncMonitorButton();
+        Toast.makeText(this, "Takip açıldı. İlk kontrol başlangıç değeri olarak kaydedilir.", Toast.LENGTH_LONG).show();
+    }
+
+    private void startMonitorService() {
+        Intent service = new Intent(this, SalesMonitorService.class);
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+        else startService(service);
+    }
+
+    private void syncMonitorButton() {
+        if (monitorButton == null) return;
+        boolean enabled = prefs.getBoolean(PREF_MONITOR, false);
+        monitorButton.setText(enabled ? "5 dk satış bildirimi: AÇIK" : "5 dk satış bildirimi: KAPALI");
     }
 
     private LinearLayout card() {
@@ -179,13 +232,8 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private LinearLayout.LayoutParams buttonParams() {
-        return new LinearLayout.LayoutParams(-1, dp(54));
-    }
-
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
+    private LinearLayout.LayoutParams buttonParams() { return new LinearLayout.LayoutParams(-1, dp(54)); }
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
     private void chooseEnvFile() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -213,6 +261,7 @@ public class MainActivity extends Activity {
             prefs.edit().putString(PREF_ENV, encrypt(env)).apply();
             refreshButton.setEnabled(true);
             Toast.makeText(this, "Kimlik bilgileri güvenli şekilde kaydedildi.", Toast.LENGTH_SHORT).show();
+            if (prefs.getBoolean(PREF_MONITOR, false)) startMonitorService();
             refreshReport();
         } catch (Exception e) {
             Toast.makeText(this, "Dosya okunamadı: " + safeMessage(e), Toast.LENGTH_LONG).show();
@@ -350,10 +399,7 @@ public class MainActivity extends Activity {
                 if (id.isEmpty() || seenIds.add(id)) all.put(app);
             }
 
-            String next = firstNonEmpty(
-                    page.optString("@nextLink", ""),
-                    page.optString("nextLink", ""),
-                    page.optString("NextLink", ""));
+            String next = firstNonEmpty(page.optString("@nextLink", ""), page.optString("nextLink", ""), page.optString("NextLink", ""));
             if (!next.isEmpty()) {
                 nextUrl = resolveMyUrl(next);
                 continue;
@@ -394,7 +440,7 @@ public class MainActivity extends Activity {
         String body = "grant_type=client_credentials" +
                 "&client_id=" + enc(clientId) +
                 "&client_secret=" + enc(clientSecret) +
-                "&resource=" + enc("https://manage.devcenter.microsoft.com");
+                "&resource=" + enc(DEV_CENTER);
         try (OutputStream out = conn.getOutputStream()) { out.write(body.getBytes(StandardCharsets.UTF_8)); }
         int code = conn.getResponseCode();
         String response = readResponse(conn, code);
@@ -518,6 +564,7 @@ public class MainActivity extends Activity {
     private void setBusy(boolean busy, String message) {
         refreshButton.setEnabled(!busy && prefs.contains(PREF_ENV));
         importButton.setEnabled(!busy);
+        monitorButton.setEnabled(!busy || prefs.getBoolean(PREF_MONITOR, false));
         status.setText(message);
     }
 

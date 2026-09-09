@@ -1,44 +1,127 @@
-name: Public Turkish Data Job
+name: Continuous Turkish Training
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 * * * *'
+    - cron: '17 */6 * * *'
 
 permissions:
   contents: read
+  actions: write
+  id-token: write
+
+concurrency:
+  group: continuous-turkish-training
+  cancel-in-progress: false
 
 jobs:
-  collect:
+  train:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 285
+    env:
+      STORE_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/training-store-v3
+      OIDC_AUD: turkish-training-store
     steps:
       - uses: actions/checkout@v4
-      - name: Collect and validate Turkish-only public text
+
+      - name: Install CPU training dependencies
         shell: bash
         run: |
           set -euo pipefail
-          python3 public_turkish_stream.py --out /tmp/turkish.jsonl --max-items 800
+          python3 -m pip install --disable-pip-version-check --quiet sentencepiece==0.2.1
+          python3 -m pip install --disable-pip-version-check --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Collect Turkish-only public corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 public_turkish_stream.py --out /tmp/turkish.jsonl --max-items 1200
           python3 - <<'PY'
           import json
-          p='/tmp/turkish.jsonl'
-          rows=[json.loads(x) for x in open(p,encoding='utf-8') if x.strip()]
-          assert rows, 'no Turkish samples collected'
+          rows=[json.loads(x) for x in open('/tmp/turkish.jsonl',encoding='utf-8') if x.strip()]
+          assert len(rows)>=25
           assert all(r.get('language')=='tr' for r in rows)
           print('validated_samples=',len(rows))
           PY
 
-      - name: Train disposable student delta
+      - name: Restore private latest checkpoint
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --disable-pip-version-check --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
-          python3 student_delta.py --data /tmp/turkish.jsonl --out /tmp/student-delta.pt --steps 120
-          ls -lh /tmp/student-delta.pt
+          mkdir -p /tmp/trainwork
+          oidc() {
+            curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUD}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])'
+          }
+          TOKEN="$(oidc)"
+          if curl -fsS -H "Authorization: Bearer ${TOKEN}" "${STORE_URL}?op=download&name=state/manifest.json" -o /tmp/store-manifest.json; then
+            PREFIX="$(python3 -c 'import json;print(json.load(open("/tmp/store-manifest.json"))["prefix"])')"
+            PARTS="$(python3 -c 'import json;print(json.load(open("/tmp/store-manifest.json"))["parts"])')"
+            : > /tmp/trainwork/latest.pt
+            for ((i=0;i<PARTS;i++)); do
+              printf -v P '%03d' "$i"
+              TOKEN="$(oidc)"
+              curl -fsS -H "Authorization: Bearer ${TOKEN}" "${STORE_URL}?op=download&name=${PREFIX}/part-${P}" >> /tmp/trainwork/latest.pt
+            done
+            TOKEN="$(oidc)"
+            curl -fsS -H "Authorization: Bearer ${TOKEN}" "${STORE_URL}?op=download&name=state/tokenizer.model" -o /tmp/trainwork/tokenizer.model
+            echo "restored_private_checkpoint_parts=${PARTS}"
+          else
+            rm -f /tmp/store-manifest.json
+            echo "starting_new_private_checkpoint"
+          fi
 
-      - name: Keep model data off the public repository
+      - name: Continue 100M Turkish training
         shell: bash
         run: |
           set -euo pipefail
-          rm -f /tmp/turkish.jsonl /tmp/student-delta.pt
-          echo 'No dataset, checkpoint, token, endpoint, private repository name, or model identifier is committed or uploaded.'
+          export OMP_NUM_THREADS="$(nproc)"
+          export MKL_NUM_THREADS="$(nproc)"
+          python3 train100m.py --data /tmp/turkish.jsonl --work /tmp/trainwork --seconds 13800
+
+      - name: Publish checkpoint privately
+        shell: bash
+        run: |
+          set -euo pipefail
+          oidc() {
+            curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUD}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])'
+          }
+          PREFIX="versions/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          D="$(mktemp -d)"
+          split -b 6000000 -d -a 3 /tmp/trainwork/latest.pt "$D/part-"
+          mapfile -t PARTS < <(find "$D" -type f -name 'part-*' | sort)
+          i=0
+          for f in "${PARTS[@]}"; do
+            printf -v P '%03d' "$i"
+            TOKEN="$(oidc)"
+            curl -fsS --retry 3 -X POST -H "Authorization: Bearer ${TOKEN}" -H "x-object-name: ${PREFIX}/part-${P}" --data-binary "@$f" "${STORE_URL}?op=upload" >/dev/null
+            i=$((i+1))
+          done
+          TOKEN="$(oidc)"
+          curl -fsS --retry 3 -X POST -H "Authorization: Bearer ${TOKEN}" -H "x-object-name: state/tokenizer.model" --data-binary @/tmp/trainwork/tokenizer.model "${STORE_URL}?op=upload" >/dev/null
+          python3 - "$PREFIX" "$i" <<'PY'
+          import json,sys
+          m=json.load(open('/tmp/trainwork/manifest.json'))
+          m['prefix']=sys.argv[1]; m['parts']=int(sys.argv[2])
+          open('/tmp/latest-store-manifest.json','w').write(json.dumps(m,separators=(',',':')))
+          PY
+          TOKEN="$(oidc)"
+          curl -fsS --retry 3 -X POST -H "Authorization: Bearer ${TOKEN}" -H "x-object-name: state/manifest.json" --data-binary @/tmp/latest-store-manifest.json "${STORE_URL}?op=upload" >/dev/null
+          rm -rf "$D" /tmp/turkish.jsonl /tmp/trainwork/latest.pt
+          echo "private_latest_updated=true parts=${i}"
+
+      - name: Start next training cycle
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sleep 20
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/runner.yml/dispatches" \
+            -d '{"ref":"main"}' >/dev/null

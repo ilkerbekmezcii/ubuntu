@@ -86,10 +86,10 @@ def batch(data,device):
     y=data[i+1:i+BLOCK+1][None].to(device)
     return x,y
 
-def save(path,model,opt,step,loss,tokenizer_name):
+def save(path,model,step,loss,tokenizer_name):
     cfg={"vocab_size":VOCAB,"block_size":BLOCK,"layers":LAYERS,"d_model":D_MODEL,"heads":HEADS,"mlp_mult":MLP_MULT,"params":sum(p.numel() for p in model.parameters())}
     state={k:v.detach().cpu().half() for k,v in model.state_dict().items()}
-    torch.save({"stage":"continual-pretrain","step":step,"config":cfg,"state_dict":state,"optimizer":opt.state_dict(),"loss":loss,"tokenizer":tokenizer_name},path)
+    torch.save({"stage":"continual-pretrain","step":step,"config":cfg,"state_dict":state,"loss":loss,"tokenizer":tokenizer_name},path)
 
 def main():
     ap=argparse.ArgumentParser()
@@ -106,15 +106,13 @@ def main():
     if ck.exists():
         z=torch.load(ck,map_location="cpu",weights_only=False)
         m.load_state_dict(z["state_dict"]); step=int(z.get("step",0))
-        try: opt.load_state_dict(z["optimizer"])
-        except Exception: pass
     start=time.time(); last_loss=None
     while time.time()-start < a.seconds:
         x,y=batch(data,device); opt.zero_grad(set_to_none=True)
         logits=m(x); loss=F.cross_entropy(logits.reshape(-1,VOCAB),y.reshape(-1)); loss.backward(); torch.nn.utils.clip_grad_norm_(m.parameters(),1.0); opt.step(); step+=1; last_loss=float(loss)
         if step%10==0: print(json.dumps({"step":step,"loss":last_loss,"params":params}),flush=True)
-        if step%50==0: save(ck,m,opt,step,last_loss,tok.name)
-    save(ck,m,opt,step,last_loss,tok.name)
+        if step%50==0: save(ck,m,step,last_loss,tok.name)
+    save(ck,m,step,last_loss,tok.name)
     (w/"manifest.json").write_text(json.dumps({"version":1,"step":step,"loss":last_loss,"params":params,"tokenizer":"tokenizer.model","checkpoint":"latest.pt","language":"tr"},ensure_ascii=False),encoding="utf-8")
     print(json.dumps({"done":True,"step":step,"loss":last_loss,"params":params}),flush=True)
 if __name__=="__main__": main()

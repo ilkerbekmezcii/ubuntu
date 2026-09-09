@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      PRIVATE_REPO_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_PAT || secrets.PAT || secrets.TOKEN }}
+      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN || secrets.TIWOO_TOKEN || secrets.TIWOO_GITHUB_TOKEN || secrets.GITHUB_ACCESS_TOKEN || secrets.ACCESS_TOKEN || secrets.REPO_TOKEN || secrets.GIT_TOKEN || secrets.FULL_TOKEN || secrets.GH_TOKEN_FULL || secrets.GITHUB_TOKEN_FULL || secrets.GH_PAT || secrets.GITHUB_PAT || secrets.PAT || secrets.TOKEN }}
     steps:
       - name: Validate private-repo credential
         shell: bash
@@ -28,15 +28,14 @@ jobs:
           set -euo pipefail
           test -n "${PRIVATE_REPO_TOKEN:-}" || { echo 'private_repo_credential_missing'; exit 2; }
 
-      - name: Checkout private Tiwoo work branch
-        uses: actions/checkout@v4
-        with:
-          repository: ilkerbekmezcii/tiwoo
-          ref: work
-          token: ${{ env.PRIVATE_REPO_TOKEN }}
-          path: tiwoo-work
-          persist-credentials: false
-          fetch-depth: 1
+      - name: Clone private Tiwoo work branch into ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          AUTH="$(printf 'x-access-token:%s' "$PRIVATE_REPO_TOKEN" | base64 -w0)"
+          git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" clone --quiet --depth 1 --branch work https://github.com/ilkerbekmezcii/tiwoo.git tiwoo-work
+          git -C tiwoo-work remote remove origin
+          echo "private_checkout_sha=$(git -C tiwoo-work rev-parse HEAD)"
 
       - name: Set up Node 24
         uses: actions/setup-node@v4

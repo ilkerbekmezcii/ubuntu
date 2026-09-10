@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Playwright Chromium
         shell: bash
         run: |
@@ -30,13 +29,11 @@ jobs:
           npm init -y >/dev/null 2>&1
           npm install --no-save playwright@1.55.0 >/dev/null
           npx playwright install --with-deps chromium >/dev/null
-
       - name: Audit live Tiwoo
         id: smoke
         continue-on-error: true
         shell: bash
         run: node tiwoo-e2e.mjs
-
       - name: Prepare interaction audit
         shell: bash
         run: |
@@ -46,15 +43,14 @@ jobs:
           s=p.read_text()
           s=s.replace("await setSession(primary);\n\n  result.actions.create", "await setSession(primary); await rpc('privacy',{isPrivate:false});\n\n  result.actions.create")
           s=s.replace("await page.locator('#followProfile').click(); await sleep(1200);", "await page.locator('#followProfile').click(); await sleep(250); const confirm=page.locator('#tiwooConfirmModal .tiwoo-confirm-approve'); if(await confirm.isVisible().catch(()=>false))await confirm.click(); await sleep(950);")
+          s=s.replace("await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending=", "await rpc('follow',{target:peerInfo.key});const primaryInfo=await rpc('me',{});await setSession(peer);const primaryUser=await page.evaluate(username=>(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+String(username).toLowerCase())),primary.username);if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending=")
           p.write_text(s)
           PY
-
       - name: Audit Tiwoo interactions
         id: interactions
         continue-on-error: true
         shell: bash
         run: node tiwoo-interactions.mjs
-
       - name: Upload public audit evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -63,11 +59,8 @@ jobs:
           path: artifacts/
           if-no-files-found: warn
           retention-days: 1
-
       - name: Fail on audit errors
         if: always()
         shell: bash
         run: |
-          if [ "${{ steps.smoke.outcome }}" != "success" ] || [ "${{ steps.interactions.outcome }}" != "success" ]; then
-            exit 1
-          fi
+          if [ "${{ steps.smoke.outcome }}" != "success" ] || [ "${{ steps.interactions.outcome }}" != "success" ]; then exit 1; fi

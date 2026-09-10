@@ -25,7 +25,7 @@ public final class SalesMonitorService extends Service {
         super.onCreate();store=new ReportStore(this);credentials=new CredentialStore(this);channels();
         PowerManager pm=(PowerManager)getSystemService(POWER_SERVICE);
         if(pm!=null){wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"MicrosoftRapor:LiveSync");wakeLock.setReferenceCounted(false);wakeLock.acquire();}
-        startForeground(ONGOING,note(CH,"Microsoft Rapor canlı senkronizasyon","2 dakikalık canlı sorgu başlatılıyor",true));
+        startForeground(ONGOING,note(CH,"Microsoft Rapor canlı senkronizasyon","Store Analytics 2 dakikalık sorgu başlatılıyor",true));
     }
 
     @Override public int onStartCommand(Intent i,int f,int id){
@@ -43,9 +43,9 @@ public final class SalesMonitorService extends Service {
             JSONObject beforeDay=hadTodayBaseline?store.syncDayValues():new JSONObject();
             try{
                 ReportRepository repo=new ReportRepository(credentials,store);
-                store.markSyncAttempt("Earnings sorgulanıyor");update("Earnings sorgulanıyor • "+time());
+                store.markSyncAttempt("Store Analytics sorgulanıyor");update("Store Analytics sorgulanıyor • "+time());
                 repo.refresh(null);
-                store.markSyncSuccess("Earnings");update("CANLI • Earnings • "+time()+" • sonraki 2 dk");
+                store.markSyncSuccess("Store Analytics");update("CANLI • Store Analytics • "+time()+" • sonraki 2 dk");
                 JSONObject afterDay=today.equals(store.syncDay())?store.syncDayValues():new JSONObject();
                 if(store.monitorEnabled()&&hadTodayBaseline)notifyProductDeltas(beforeDay,afterDay);
                 backoff=2000L;
@@ -53,7 +53,7 @@ public final class SalesMonitorService extends Service {
                 if(wait>0L)Thread.sleep(wait);
             }catch(InterruptedException e){break;}
             catch(Exception e){
-                store.markSyncError(safe(e));update("Earnings yeniden deneniyor • "+shortText(safe(e)));
+                store.markSyncError(safe(e));update("Store Analytics yeniden deneniyor • "+shortText(safe(e)));
                 try{Thread.sleep(backoff);}catch(InterruptedException x){break;}
                 backoff=Math.min(60000L,backoff*2L);
             }

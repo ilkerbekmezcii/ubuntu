@@ -29,13 +29,15 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           p=Path('tiwoo-interactions.mjs'); s=p.read_text()
-          marker="await setSession(primary);"
-          s=s.replace(marker, marker+" await rpc('privacy',{isPrivate:false});", 1)
+          s=s.replace("await setSession(primary);", "await setSession(primary); await rpc('privacy',{isPrivate:false});", 1)
           s=s.replace("s=bad.length;await page.locator('#followProfile').click();await sleep(1000);result.actions.unfollow=", "s=bad.length;await page.locator('#followProfile').click();await sleep(150);await page.locator('#tiwooConfirmModal .tiwoo-confirm-approve').click();await sleep(850);result.actions.unfollow=")
           s=s.replace("await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending=", "await rpc('follow',{target:peerInfo.key});await setSession(peer);const primaryUser=await page.evaluate(username=>(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+String(username).toLowerCase())),primary.username);if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending=")
-          s=s.replace("await msg.click({timeout:10000}); await sleep(900);", "await msg.click({timeout:10000}); await sleep(1200);")
-          s=s.replace("const input=page.locator('#dmText').first(),send=page.locator('#dmSend').first();", "let input=page.locator('#dmText,[data-chat-input]').first();if(!await input.count()){const launch=page.locator('.tiwoo-chat-launcher');if(await launch.isVisible().catch(()=>false)){await launch.click();await sleep(700)}const row=page.locator('.tiwoo-chat-user').filter({hasText:peer.username}).first();if(await row.count()){await row.click();await sleep(700)}input=page.locator('#dmText,[data-chat-input]').first()}const send=page.locator('#dmSend,[data-chat-send]').first();")
-          s=s.replace("page.once('dialog',d=>d.accept()); await btn.click(); await sleep(1400);", "page.once('dialog',d=>d.accept()); await btn.click(); await sleep(150); const delConfirm=page.locator('#tiwooConfirmModal .tiwoo-confirm-approve'); if(await delConfirm.isVisible().catch(()=>false))await delConfirm.click(); await sleep(1250);")
+          old="let mb=page.locator('#msgProfile');await mb.click();await sleep(700);let dm=page.locator('#dmText');if(await dm.count()){let mt=`dm-e2e-${Date.now()}`;await dm.fill(mt);s=bad.length;await page.locator('#dmSend').click();await sleep(1000);result.actions.message={toast:await toast(),bad:bad.slice(s)}}else result.actions.message={missing:true};"
+          new="let mb=page.locator('#msgProfile');await mb.click();await sleep(1000);let dm=page.locator('[data-chat-input],#dmText').first();if(!await dm.count()){let row=page.locator('.tiwoo-chat-user').filter({hasText:peer.username}).first();if(await row.count()){await row.click();await sleep(700);dm=page.locator('[data-chat-input],#dmText').first()}}if(await dm.count()){let mt=`dm-e2e-${Date.now()}`;await dm.fill(mt);s=bad.length;await page.locator('[data-chat-send],#dmSend').first().click();await sleep(1000);result.actions.message={toast:await toast(),bad:bad.slice(s)}}else result.actions.message={missing:true};"
+          s=s.replace(old,new)
+          old="page.once('dialog',d=>d.accept());s=bad.length;await del.click();await sleep(1000);result.actions.delete="
+          new="page.once('dialog',d=>d.accept());s=bad.length;await del.click();await sleep(150);let dc=page.locator('#tiwooConfirmModal .tiwoo-confirm-approve');if(await dc.isVisible().catch(()=>false))await dc.click();await sleep(850);result.actions.delete="
+          s=s.replace(old,new)
           p.write_text(s)
           PY
       - name: Audit Tiwoo interactions

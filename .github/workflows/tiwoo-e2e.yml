@@ -37,6 +37,18 @@ jobs:
         shell: bash
         run: node tiwoo-e2e.mjs
 
+      - name: Prepare interaction audit
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('tiwoo-interactions.mjs')
+          s=p.read_text()
+          s=s.replace("await setSession(primary);\n\n  result.actions.create", "await setSession(primary); await rpc('privacy',{isPrivate:false});\n\n  result.actions.create")
+          s=s.replace("await page.locator('#followProfile').click(); await sleep(1200);", "await page.locator('#followProfile').click(); await sleep(250); const confirm=page.locator('#tiwooConfirmModal .tiwoo-confirm-approve'); if(await confirm.isVisible().catch(()=>false))await confirm.click(); await sleep(950);")
+          p.write_text(s)
+          PY
+
       - name: Audit Tiwoo interactions
         id: interactions
         continue-on-error: true

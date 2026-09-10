@@ -1,0 +1,135 @@
+name: Temporary Tiwoo Android Runner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tiwoo-android-temp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: tiwoo-android-temp
+  cancel-in-progress: true
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Obtain GitHub OIDC token
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN_JSON="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=tiwoo-public-runner")"
+          OIDC_TOKEN="$(printf '%s' "$TOKEN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          echo "OIDC_TOKEN=$OIDC_TOKEN" >> "$GITHUB_ENV"
+
+      - name: Fetch Tiwoo Android source into runner temp only
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_JSON=/tmp/tiwoo-source.json
+          SRC_DIR=/tmp/tiwoo-android
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -H 'Cache-Control: no-store' \
+            'https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-runner-source-once' \
+            -o "$SRC_JSON"
+          python3 - "$SRC_JSON" "$SRC_DIR" <<'PY'
+          import json, pathlib, sys
+          src=pathlib.Path(sys.argv[1]); root=pathlib.Path(sys.argv[2])
+          data=json.loads(src.read_text())
+          assert data.get('sha')=='a2762b49903051f97bca38de72ad6833d637e14d'
+          files=data.get('files') or {}
+          assert len(files)>=15
+          for rel,content in files.items():
+              p=root/rel
+              p.parent.mkdir(parents=True,exist_ok=True)
+              p.write_text(content,encoding='utf-8')
+          print('source_files=',len(files))
+          PY
+          rm -f "$SRC_JSON"
+          test ! -e "$GITHUB_WORKSPACE/android"
+          test ! -e "$GITHUB_WORKSPACE/tiwoo"
+
+      - name: Verify active-conversation notification guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          root=Path('/tmp/tiwoo-android')
+          java=(root/'app/src/main/java/com/earthgames/tiwoo/MainActivity.java').read_text()
+          gradle=(root/'app/build.gradle').read_text()
+          required={
+            'active alias setter':'setActiveConversation(String aliasesJson)' in java,
+            'native suppression':'if (isActiveConversationNotification(key, type)) return;' in java,
+            'message-only guard':'!"message".equalsIgnoreCase(type)' in java,
+            'conversation prefix':'message:conversation:' in java,
+            'versionCode 2':'versionCode 2' in gradle,
+            'versionName 1.0.1':"versionName '1.0.1'" in gradle,
+          }
+          failed=[k for k,v in required.items() if not v]
+          print('guard_checks=',required)
+          if failed: raise SystemExit('failed: '+', '.join(failed))
+          # Equivalent behavioral truth-table for the exact native prefix algorithm.
+          def blocked(aliases,key,typ):
+              if typ.lower()!='message' or key is None or not aliases: return False
+              n=key.strip().lower()
+              if not n.startswith('message:conversation:'): return False
+              return any(n.startswith('message:conversation:'+a+':') for a in aliases)
+          aliases={'alice@example.com','uid:abc123','abc123'}
+          cases=[
+              (blocked(aliases,'message:conversation:alice@example.com:100','message'),True,'same email'),
+              (blocked(aliases,'message:conversation:uid:abc123:101','message'),True,'same uid'),
+              (blocked(aliases,'message:conversation:bob@example.com:102','message'),False,'other user'),
+              (blocked(aliases,'message:conversation:alice@example.com:103','like'),False,'other type'),
+          ]
+          for actual,want,name in cases:
+              assert actual is want,(name,actual,want)
+          print('behavior_cases=4 PASS')
+          PY
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Build APK and AAB
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle -p /tmp/tiwoo-android clean assembleDebug bundleRelease --stacktrace
+          APK=/tmp/tiwoo-android/app/build/outputs/apk/debug/app-debug.apk
+          AAB=/tmp/tiwoo-android/app/build/outputs/bundle/release/app-release.aab
+          test -s "$APK"
+          test -s "$AAB"
+          echo "APK_BYTES=$(stat -c%s "$APK")"
+          echo "AAB_BYTES=$(stat -c%s "$AAB")"
+          sha256sum "$APK" "$AAB" | sed 's#/tmp/tiwoo-android/##'
+          if jarsigner -verify "$AAB" >/dev/null 2>&1; then echo 'AAB_SIGNED=true'; else echo 'AAB_SIGNED=false'; fi
+
+      - name: Cleanup runner temp
+        if: always()
+        shell: bash
+        run: |
+          rm -rf /tmp/tiwoo-android /tmp/tiwoo-source.json

@@ -16,7 +16,6 @@ public final class PartnerCenterClient {
     private static final String DEV = "https://manage.devcenter.microsoft.com";
     private static final String BASE = DEV + "/v1.0/my/";
     private static final Object ACQ_LOCK = new Object();
-    private static long lastAcq;
     private static String token;
     private static long tokenAt;
     private static String tokenKey;
@@ -61,7 +60,7 @@ public final class PartnerCenterClient {
                     long q = r.optLong("acquisitionQuantity", 0L);
                     z.sales += s;
                     z.acq += q;
-                    if (isoToday.equals(r.optString("date"))) {
+                    if (sameDay(r.optString("date"), isoToday)) {
                         z.todaySales += s;
                         z.todayAcq += q;
                     }
@@ -94,7 +93,7 @@ public final class PartnerCenterClient {
                 try (OutputStream o = x.getOutputStream()) { o.write(b.getBytes(StandardCharsets.UTF_8)); }
                 int code = x.getResponseCode();
                 String body = read(x, code);
-                if (code < 200 || code >= 300) throw new ApiException(code, "Microsoft oturum açma reddedildi");
+                if (code < 200 || code >= 300) throw new ApiException(code, "Microsoft oturum açma HTTP " + code + detail(body));
                 String nt = new JSONObject(body).optString("access_token");
                 if (nt.isEmpty()) throw new ApiException(code, "Microsoft token alınamadı");
                 synchronized (PartnerCenterClient.class) {
@@ -117,7 +116,6 @@ public final class PartnerCenterClient {
     private JSONObject get(String url, String t, boolean acq) throws Exception {
         Exception lastNetwork = null;
         for (int attempt = 0; attempt < 5; attempt++) {
-            if (acq) waitAcq();
             HttpURLConnection x = null;
             try {
                 x = (HttpURLConnection) new URL(url).openConnection();
@@ -126,22 +124,21 @@ public final class PartnerCenterClient {
                 x.setRequestProperty("Authorization", "Bearer " + t);
                 x.setRequestProperty("Accept", "application/json");
                 int code = x.getResponseCode();
-                if (acq) lastAcq = System.currentTimeMillis();
                 String body = read(x, code);
                 if (code >= 200 && code < 300) return new JSONObject(body);
                 if (code == 429 && attempt < 4) {
-                    long w = 3500L;
+                    long w = 3250L;
                     try { w = Math.max(w, Long.parseLong(x.getHeaderField("Retry-After")) * 1000L + 250L); }
                     catch (Exception ignored) {}
                     Thread.sleep(w);
                     continue;
                 }
-                if (code == 401 || code == 403) throw new ApiException(code, "Partner Center yetkisi reddedildi");
+                if (code == 401 || code == 403) throw new ApiException(code, "Partner Center yetkisi reddedildi" + detail(body));
                 if (code >= 500 && attempt < 2) {
                     Thread.sleep(1500L * (attempt + 1));
                     continue;
                 }
-                throw new ApiException(code, "Partner Center HTTP " + code);
+                throw new ApiException(code, "Partner Center HTTP " + code + detail(body));
             } catch (UnknownHostException | SocketTimeoutException e) {
                 lastNetwork = e;
                 if (attempt < 2) {
@@ -158,9 +155,18 @@ public final class PartnerCenterClient {
         throw new ApiException(429, "Microsoft istek limiti aşıldı");
     }
 
-    private static void waitAcq() throws InterruptedException {
-        long elapsed = System.currentTimeMillis() - lastAcq;
-        if (lastAcq > 0 && elapsed < 3300L) Thread.sleep(3300L - elapsed);
+    private static boolean sameDay(String raw, String day) {
+        if (raw == null || day == null) return false;
+        String s = raw.trim();
+        return s.equals(day) || s.startsWith(day + "T") || s.startsWith(day + " ");
+    }
+
+    private static String detail(String body) {
+        if (body == null) return "";
+        String s = body.replace('\n', ' ').replace('\r', ' ').trim();
+        if (s.isEmpty()) return "";
+        if (s.length() > 180) s = s.substring(0, 180) + "…";
+        return " • " + s;
     }
 
     private static JSONArray array(JSONObject j) { JSONArray a = j.optJSONArray("value"); if (a == null) a = j.optJSONArray("Value"); return a == null ? new JSONArray() : a; }

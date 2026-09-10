@@ -11,6 +11,7 @@ public final class ReportStore {
     private static final String MONITOR_DAY="monitor_day", MONITOR_BASELINE="monitor_baseline";
     private static final String SYNC_DAY="sync_day", SYNC_DAY_VALUES="sync_day_values", APP_MONTH_VALUES="app_month_values";
     private static final String MONTH_KEY="month_key", FULL_SYNC_AT="full_sync_at";
+    private static final String SYNC_ATTEMPT_AT="sync_attempt_at",SYNC_OK_AT="sync_ok_at",SYNC_STATUS="sync_status",SYNC_ERROR="sync_error",SYNC_SOURCE="sync_source";
     private final SharedPreferences p;
 
     public ReportStore(Context c){p=c.getSharedPreferences(PREFS,Context.MODE_PRIVATE);}
@@ -36,6 +37,16 @@ public final class ReportStore {
     public JSONObject appMonthValues(){return json(APP_MONTH_VALUES);}
     public String monthKey(){return p.getString(MONTH_KEY,"");}
     public long fullSyncAt(){return p.getLong(FULL_SYNC_AT,0L);}
+
+    public long syncAttemptAt(){return p.getLong(SYNC_ATTEMPT_AT,0L);}
+    public long syncOkAt(){return p.getLong(SYNC_OK_AT,0L);}
+    public String syncStatus(){return p.getString(SYNC_STATUS,"");}
+    public String syncError(){return p.getString(SYNC_ERROR,"");}
+    public String syncSource(){return p.getString(SYNC_SOURCE,"");}
+    public void markSyncAttempt(String status){p.edit().putLong(SYNC_ATTEMPT_AT,System.currentTimeMillis()).putString(SYNC_STATUS,status==null?"":status).apply();}
+    public void markSyncSuccess(String source){long now=System.currentTimeMillis();p.edit().putLong(SYNC_OK_AT,now).putLong(SYNC_ATTEMPT_AT,now).putString(SYNC_STATUS,"CANLI").putString(SYNC_SOURCE,source==null?"":source).putString(SYNC_ERROR,"").apply();}
+    public void markSyncFallback(String source,String error){long now=System.currentTimeMillis();p.edit().putLong(SYNC_OK_AT,now).putLong(SYNC_ATTEMPT_AT,now).putString(SYNC_STATUS,"FALLBACK").putString(SYNC_SOURCE,source==null?"":source).putString(SYNC_ERROR,error==null?"":error).apply();}
+    public void markSyncError(String error){p.edit().putLong(SYNC_ATTEMPT_AT,System.currentTimeMillis()).putString(SYNC_STATUS,"HATA").putString(SYNC_ERROR,error==null?"":error).apply();}
 
     public void saveFullSyncState(String monthKey,String day,JSONObject dayValues,JSONObject appMonthValues,long when){
         p.edit().putString(MONTH_KEY,monthKey).putString(SYNC_DAY,day).putString(SYNC_DAY_VALUES,dayValues.toString())

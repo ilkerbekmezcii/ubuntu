@@ -1,5 +1,4 @@
 name: Tiwoo Live E2E Audit
-
 on:
   push:
     branches: [tiwoo-e2e]
@@ -36,10 +35,9 @@ jobs:
           new="s=bad.length;await page.locator('#followProfile').click();await sleep(150);await page.locator('#tiwooConfirmModal .tiwoo-confirm-approve').click();await sleep(850);result.actions.unfollow="
           s=s.replace(old,new)
           old2="await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending="
-          new2="await rpc('follow',{target:peerInfo.key});await setSession(peer);const primaryUser=(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+primary.username.toLowerCase()));if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending="
+          new2="await rpc('follow',{target:peerInfo.key});await setSession(peer);const primaryUser=await page.evaluate(username=>(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+String(username).toLowerCase())),primary.username);if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending="
           s=s.replace(old2,new2)
           p.write_text(s)
-          print('patches', 'privacy' in s, 'tiwooConfirmModal' in s, 'primaryUser' in s)
           PY
       - name: Audit Tiwoo interactions
         id: interactions

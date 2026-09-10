@@ -68,7 +68,7 @@ public final class ReportRepository {
         ReportStore.Report r=rebuild(newDay,monthValues,apps.length());r.updatedAt=System.currentTimeMillis();store.saveReport(r);store.saveFastSyncState(isoToday,newDay,monthValues);return r;
     }
 
-    private static JSONObject value(String name,double gross,double net,long qty){return new JSONObject().put("name",name).put("sales",finite(gross)).put("net",finite(net)).put("acq",Math.max(0,qty));}
+    private static JSONObject value(String name,double gross,double net,long qty) throws Exception {return new JSONObject().put("name",name).put("sales",finite(gross)).put("net",finite(net)).put("acq",Math.max(0,qty));}
     private static String appId(JSONObject a){return first(a.optString("id"),a.optString("applicationId"));}
     private static String appName(JSONObject a,String id){return first(a.optString("primaryName"),a.optString("name"),a.optString("applicationName"),id);}
     private static String iso(Date d){return new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(d);}

@@ -1,0 +1,58 @@
+name: HTTP Issue Gateway
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  request:
+    if: startsWith(github.event.issue.title, '[HTTP]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Execute HTTP request
+        env:
+          REQUEST_JSON: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, time, urllib.request, urllib.error
+          cfg=json.loads(os.environ['REQUEST_JSON'])
+          method=str(cfg.get('method','GET')).upper()
+          url=str(cfg['url'])
+          if not (url.startswith('https://') or url.startswith('http://')):
+              raise SystemExit('Only http/https URLs are allowed')
+          headers={str(k):str(v) for k,v in (cfg.get('headers') or {}).items()}
+          if cfg.get('auth') == 'github_token':
+              if not url.startswith('https://api.github.com/'):
+                  raise SystemExit('github_token auth is restricted to api.github.com')
+              headers['Authorization']='Bearer '+os.environ['GH_TOKEN']
+          body=cfg.get('body')
+          if body is None:
+              data=None
+          elif isinstance(body,(dict,list)):
+              data=json.dumps(body,separators=(',',':')).encode()
+              headers.setdefault('Content-Type','application/json')
+          else:
+              data=str(body).encode()
+          req=urllib.request.Request(url,data=data,headers=headers,method=method)
+          start=time.perf_counter()
+          try:
+              with urllib.request.urlopen(req,timeout=30) as r:
+                  status=r.status; out=r.read(65536).decode('utf-8','replace')
+          except urllib.error.HTTPError as e:
+              status=e.code; out=e.read(65536).decode('utf-8','replace')
+          ms=round((time.perf_counter()-start)*1000)
+          print(f'HTTP_STATUS={status}')
+          print(f'DURATION_MS={ms}')
+          print('RESPONSE_BEGIN')
+          print(out)
+          print('RESPONSE_END')
+          PY

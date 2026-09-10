@@ -1,0 +1,28 @@
+name: HTTP Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/http-test.yml'
+      - 'http-trigger.txt'
+
+permissions:
+  contents: read
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: HTTP GET test
+        shell: bash
+        run: |
+          set -euo pipefail
+          START=$(date +%s%3N)
+          CODE=$(curl -sS -o /tmp/body.txt -w '%{http_code}' https://httpbin.org/get)
+          END=$(date +%s%3N)
+          echo "status=$CODE"
+          echo "duration_ms=$((END-START))"
+          echo 'body:'
+          cat /tmp/body.txt

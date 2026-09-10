@@ -1,0 +1,86 @@
+name: Partner Center Earnings Live Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  earnings:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TZ: Europe/Istanbul
+      PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+      PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+      PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+    steps:
+      - name: Validate secret presence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PARTNER_CENTER_CLIENT_ID"
+          test -n "$PARTNER_CENTER_CLIENT_SECRET"
+          test -n "$PARTNER_CENTER_TENANT_ID"
+          echo "Partner Center secrets present"
+
+      - name: Request Microsoft access token
+        id: oauth
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN_BODY=$(mktemp)
+          METRICS=$(curl -sS \
+            -o "$TOKEN_BODY" \
+            -w '%{http_code} %{time_total}' \
+            -X POST "https://login.microsoftonline.com/${PARTNER_CENTER_TENANT_ID}/oauth2/v2.0/token" \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=client_credentials' \
+            --data-urlencode "client_id=${PARTNER_CENTER_CLIENT_ID}" \
+            --data-urlencode "client_secret=${PARTNER_CENTER_CLIENT_SECRET}" \
+            --data-urlencode 'scope=https://api.partner.microsoft.com/.default')
+          HTTP_CODE=$(awk '{print $1}' <<<"$METRICS")
+          TIME_TOTAL=$(awk '{print $2}' <<<"$METRICS")
+          echo "oauth_http_status=$HTTP_CODE"
+          echo "oauth_seconds=$TIME_TOTAL"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo 'OAuth response:'
+            cat "$TOKEN_BODY"
+            exit 1
+          fi
+          ACCESS_TOKEN=$(python3 - "$TOKEN_BODY" <<'PY'
+import json,sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    print(json.load(f)['access_token'])
+PY
+          )
+          echo "::add-mask::$ACCESS_TOKEN"
+          printf '%s' "$ACCESS_TOKEN" > "$RUNNER_TEMP/pc_access_token"
+
+      - name: Call Earnings API for today
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACCESS_TOKEN=$(cat "$RUNNER_TEMP/pc_access_token")
+          TODAY=$(TZ=Europe/Istanbul date +%F)
+          FILTER="earningForDate ge ${TODAY} and earningForDate le ${TODAY}"
+          RESPONSE=$(mktemp)
+          METRICS=$(curl -sS \
+            -o "$RESPONSE" \
+            -w '%{http_code} %{time_total}' \
+            -X POST \
+            -G 'https://api.partner.microsoft.com/v1.0/payouts/transactionhistory' \
+            --data-urlencode "\$filter=${FILTER}" \
+            --data-urlencode 'fileformat=csv' \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            -H 'Accept: application/json')
+          HTTP_CODE=$(awk '{print $1}' <<<"$METRICS")
+          TIME_TOTAL=$(awk '{print $2}' <<<"$METRICS")
+          echo "date=$TODAY"
+          echo "earnings_http_status=$HTTP_CODE"
+          echo "earnings_seconds=$TIME_TOTAL"
+          echo 'earnings_response_begin'
+          cat "$RESPONSE"
+          echo
+          echo 'earnings_response_end'

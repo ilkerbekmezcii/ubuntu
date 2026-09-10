@@ -3,19 +3,13 @@ name: Tiwoo Live E2E Audit
 on:
   push:
     branches: [tiwoo-e2e]
-    paths:
-      - 'tiwoo-e2e.mjs'
-      - 'tiwoo-interactions.mjs'
-      - '.github/workflows/tiwoo-e2e.yml'
+    paths: ['tiwoo-e2e.mjs','tiwoo-interactions.mjs','.github/workflows/tiwoo-e2e.yml']
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: tiwoo-live-e2e
   cancel-in-progress: true
-
 jobs:
   audit:
     runs-on: ubuntu-24.04
@@ -23,33 +17,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Playwright Chromium
-        shell: bash
         run: |
-          set -euo pipefail
           npm init -y >/dev/null 2>&1
           npm install --no-save playwright@1.55.0 >/dev/null
           npx playwright install --with-deps chromium >/dev/null
       - name: Audit live Tiwoo
         id: smoke
         continue-on-error: true
-        shell: bash
         run: node tiwoo-e2e.mjs
       - name: Prepare interaction audit
-        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('tiwoo-interactions.mjs')
-          s=p.read_text()
-          s=s.replace("await setSession(primary);\n\n  result.actions.create", "await setSession(primary); await rpc('privacy',{isPrivate:false});\n\n  result.actions.create")
-          s=s.replace("await page.locator('#followProfile').click(); await sleep(1200);", "await page.locator('#followProfile').click(); await sleep(250); const confirm=page.locator('#tiwooConfirmModal .tiwoo-confirm-approve'); if(await confirm.isVisible().catch(()=>false))await confirm.click(); await sleep(950);")
-          s=s.replace("await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending=", "await rpc('follow',{target:peerInfo.key});const primaryInfo=await rpc('me',{});await setSession(peer);const primaryUser=await page.evaluate(username=>(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+String(username).toLowerCase())),primary.username);if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending=")
+          p=Path('tiwoo-interactions.mjs'); s=p.read_text()
+          marker="await setSession(primary);"
+          s=s.replace(marker, marker+" await rpc('privacy',{isPrivate:false});", 1)
+          old="s=bad.length;await page.locator('#followProfile').click();await sleep(1000);result.actions.unfollow="
+          new="s=bad.length;await page.locator('#followProfile').click();await sleep(150);await page.locator('#tiwooConfirmModal .tiwoo-confirm-approve').click();await sleep(850);result.actions.unfollow="
+          s=s.replace(old,new)
+          old2="await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending="
+          new2="await rpc('follow',{target:peerInfo.key});await setSession(peer);const primaryUser=(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+primary.username.toLowerCase()));if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending="
+          s=s.replace(old2,new2)
           p.write_text(s)
+          print('patches', 'privacy' in s, 'tiwooConfirmModal' in s, 'primaryUser' in s)
           PY
       - name: Audit Tiwoo interactions
         id: interactions
         continue-on-error: true
-        shell: bash
         run: node tiwoo-interactions.mjs
       - name: Upload public audit evidence
         if: always()
@@ -61,6 +55,5 @@ jobs:
           retention-days: 1
       - name: Fail on audit errors
         if: always()
-        shell: bash
         run: |
           if [ "${{ steps.smoke.outcome }}" != "success" ] || [ "${{ steps.interactions.outcome }}" != "success" ]; then exit 1; fi

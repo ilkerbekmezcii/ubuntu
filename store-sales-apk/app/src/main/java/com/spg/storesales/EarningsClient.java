@@ -9,7 +9,9 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -79,7 +81,8 @@ public final class EarningsClient {
         List<List<String>> rows=csv(csv);Result out=new Result();if(rows.isEmpty())return out;
         List<String> h=rows.get(0);Map<String,Integer> ix=new LinkedHashMap<>();for(int i=0;i<h.size();i++)ix.put(norm(h.get(i)),i);
         for(int r=1;r<rows.size();r++){
-            List<String> row=rows.get(r);String pid=get(row,ix,"productid");String name=get(row,ix,"productname");String date=get(row,ix,"earningdate");
+            List<String> row=rows.get(r);String pid=get(row,ix,"productid");String name=get(row,ix,"productname");
+            String date=firstNonBlank(get(row,ix,"transactiondate"),get(row,ix,"earningdate"),get(row,ix,"earningfordate"));
             if(pid.isEmpty())pid=get(row,ix,"parentproductid");if(pid.isEmpty())pid=name;if(pid.isEmpty())continue;
             double earning=netUsd(row,ix);double gross=num(firstNonBlank(get(row,ix,"transactionamountusd"),get(row,ix,"totaltransactionamountusd"),get(row,ix,"revenueusd")));
             long qty=Math.max(0L,Math.round(num(get(row,ix,"quantity"))));
@@ -103,7 +106,14 @@ public final class EarningsClient {
     }
 
     private static String firstNonBlank(String... values){for(String s:values)if(s!=null&&!s.trim().isEmpty())return s.trim();return "";}
-    private static boolean sameDay(String date,String day){if(date==null||day==null)return false;return date.startsWith(day);}
+    private static boolean sameDay(String date,String day){String k=dateKey(date);return !k.isEmpty()&&k.equals(day);}
+    private static String dateKey(String raw){
+        if(raw==null)return "";String s=raw.trim();if(s.isEmpty())return "";
+        if(s.length()>=10&&s.charAt(4)=='-'&&s.charAt(7)=='-')return s.substring(0,10);
+        String[] patterns={"M/d/yyyy","MM/dd/yyyy","M/d/yyyy H:mm:ss","MM/dd/yyyy HH:mm:ss","yyyy-MM-dd'T'HH:mm:ss","yyyy-MM-dd HH:mm:ss"};
+        for(String p:patterns){try{SimpleDateFormat in=new SimpleDateFormat(p,Locale.US);in.setLenient(false);Date d=in.parse(s);if(d!=null)return new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(d);}catch(Exception ignored){}}
+        return "";
+    }
     private static String norm(String s){return s==null?"":s.replace("\uFEFF","").trim().toLowerCase(Locale.US).replace(" ","").replace("_","");}
     private static String get(List<String> r,Map<String,Integer> ix,String k){Integer i=ix.get(k);return i==null||i<0||i>=r.size()?"":r.get(i).trim();}
     private static double num(String s){try{return s==null||s.trim().isEmpty()?0d:Double.parseDouble(s.trim());}catch(Exception e){return 0d;}}

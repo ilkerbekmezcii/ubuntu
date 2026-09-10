@@ -33,7 +33,7 @@ public final class MainActivity extends Activity {
     private final Handler live=new Handler(Looper.getMainLooper());
     private final Runnable liveTick=new Runnable(){@Override public void run(){if(store!=null)render(store.loadReport());live.postDelayed(this,700L);}};
     private CredentialStore credentials;private ReportStore store;private volatile boolean refreshing;
-    private TextView today,month,todayMeta,monthMeta,dailyLeader,monthlyLeader,status;private Button refresh,monitor;
+    private TextView todayGross,todayNet,monthGross,monthNet,todayMeta,monthMeta,dailyLeader,monthlyLeader,status;private Button refresh,monitor;
 
     @Override public void onCreate(Bundle b){
         super.onCreate(b);credentials=new CredentialStore(this);store=new ReportStore(this);setTitle("Microsoft Rapor");setContentView(ui());render(store.loadReport());syncMonitor();
@@ -45,10 +45,19 @@ public final class MainActivity extends Activity {
     private View ui(){
         ScrollView s=new ScrollView(this);LinearLayout r=new LinearLayout(this);r.setOrientation(LinearLayout.VERTICAL);r.setPadding(dp(16),dp(20),dp(16),dp(28));s.addView(r);
         r.addView(txt("Microsoft Rapor",24,true,"#111827"));TextView sub=txt("Microsoft Partner Center • CANLI",13,true,"#6B7280");sub.setPadding(0,dp(2),0,dp(14));r.addView(sub);
-        LinearLayout c=card();c.addView(txt("BUGÜN",11,true,"#6B7280"));today=txt("$0.00",30,true,"#111827");c.addView(today);todayMeta=txt("Acquisition: 0",13,false,"#4B5563");c.addView(todayMeta);r.addView(c);
-        c=card();c.addView(txt("BU AY",11,true,"#6B7280"));month=txt("$0.00",30,true,"#111827");c.addView(month);monthMeta=txt("Acquisition: 0",13,false,"#4B5563");c.addView(monthMeta);r.addView(c);
-        c=card();c.addView(txt("GÜNLÜK LİDER",11,true,"#6B7280"));dailyLeader=txt("— • $0.00 • 0",16,true,"#111827");c.addView(dailyLeader);r.addView(c);
-        c=card();c.addView(txt("AYLIK LİDER",11,true,"#6B7280"));monthlyLeader=txt("— • $0.00 • 0",16,true,"#111827");c.addView(monthlyLeader);r.addView(c);
+
+        LinearLayout c=card();c.addView(txt("BUGÜN",11,true,"#6B7280"));
+        c.addView(txt("Brüt",12,false,"#6B7280"));todayGross=txt("$0.00",27,true,"#111827");c.addView(todayGross);
+        TextView nl=txt("Net",12,false,"#6B7280");nl.setPadding(0,dp(6),0,0);c.addView(nl);todayNet=txt("$0.00",23,true,"#111827");c.addView(todayNet);
+        todayMeta=txt("Adet: 0",13,false,"#4B5563");todayMeta.setPadding(0,dp(6),0,0);c.addView(todayMeta);r.addView(c);
+
+        c=card();c.addView(txt("BU AY",11,true,"#6B7280"));
+        c.addView(txt("Brüt",12,false,"#6B7280"));monthGross=txt("$0.00",27,true,"#111827");c.addView(monthGross);
+        nl=txt("Net",12,false,"#6B7280");nl.setPadding(0,dp(6),0,0);c.addView(nl);monthNet=txt("$0.00",23,true,"#111827");c.addView(monthNet);
+        monthMeta=txt("Adet: 0",13,false,"#4B5563");monthMeta.setPadding(0,dp(6),0,0);c.addView(monthMeta);r.addView(c);
+
+        c=card();c.addView(txt("GÜNLÜK LİDER",11,true,"#6B7280"));dailyLeader=txt("—\nBrüt $0.00 • Net $0.00 • 0",15,true,"#111827");c.addView(dailyLeader);r.addView(c);
+        c=card();c.addView(txt("AYLIK LİDER",11,true,"#6B7280"));monthlyLeader=txt("—\nBrüt $0.00 • Net $0.00 • 0",15,true,"#111827");c.addView(monthlyLeader);r.addView(c);
         status=txt("Hazır",12,false,"#6B7280");status.setPadding(0,dp(4),0,dp(10));r.addView(status);
         refresh=button("Öncelikli yenile");refresh.setOnClickListener(v->refreshAsync());r.addView(refresh,params());
         monitor=button("Satış bildirimi");monitor.setOnClickListener(v->toggleMonitor());LinearLayout.LayoutParams p=params();p.topMargin=dp(8);r.addView(monitor,p);
@@ -56,9 +65,10 @@ public final class MainActivity extends Activity {
     }
 
     private void render(ReportStore.Report x){
-        today.setText(money(x.dailySales));month.setText(money(x.monthlySales));todayMeta.setText("Acquisition: "+Math.max(0,x.dailyAcq));monthMeta.setText("Acquisition: "+Math.max(0,x.monthlyAcq));
-        dailyLeader.setText(safeName(x.dailyLeader)+String.format(Locale.US," • $%.2f • %d",finite(x.dailyLeaderSales),Math.max(0,x.dailyLeaderAcq)));
-        monthlyLeader.setText(safeName(x.monthlyLeader)+String.format(Locale.US," • $%.2f • %d",finite(x.monthlyLeaderSales),Math.max(0,x.monthlyLeaderAcq)));
+        todayGross.setText(money(x.dailySales));todayNet.setText(money(x.dailyNet));monthGross.setText(money(x.monthlySales));monthNet.setText(money(x.monthlyNet));
+        todayMeta.setText("Adet: "+Math.max(0,x.dailyAcq));monthMeta.setText("Adet: "+Math.max(0,x.monthlyAcq));
+        dailyLeader.setText(safeName(x.dailyLeader)+String.format(Locale.US,"\nBrüt $%.2f • Net $%.2f • %d",finite(x.dailyLeaderSales),finite(x.dailyLeaderNet),Math.max(0,x.dailyLeaderAcq)));
+        monthlyLeader.setText(safeName(x.monthlyLeader)+String.format(Locale.US,"\nBrüt $%.2f • Net $%.2f • %d",finite(x.monthlyLeaderSales),finite(x.monthlyLeaderNet),Math.max(0,x.monthlyLeaderAcq)));
         if(x.updatedAt>0&&!refreshing)status.setText(statusText(x));
     }
     private String statusText(ReportStore.Report x){if(x.updatedAt<=0)return "Canlı senkronizasyon açık • ilk veri hazırlanıyor";return "CANLI • son veri "+DateFormat.getTimeInstance(DateFormat.MEDIUM).format(new Date(x.updatedAt))+" • "+Math.max(0,x.appCount)+" uygulama";}

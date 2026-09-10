@@ -44,7 +44,7 @@ public final class EarningsClient {
             item=first(s);status=item.optString("status");blob=item.optString("blobLocation");
         }
         if(blob==null||blob.isEmpty())throw new Exception("Earnings blob alınamadı");
-        return parseCsv(download(blob),end);
+        return parseCsv(download(blob),start,end);
     }
 
     private String token() throws Exception {
@@ -77,12 +77,13 @@ public final class EarningsClient {
         try{x.setConnectTimeout(10000);x.setReadTimeout(30000);int c=x.getResponseCode();if(c<200||c>=300)throw new Exception("Earnings CSV HTTP "+c);return read(x,c);}finally{x.disconnect();}
     }
 
-    private static Result parseCsv(String csv,String targetDay){
+    private static Result parseCsv(String csv,String startDay,String targetDay){
         List<List<String>> rows=csv(csv);Result out=new Result();if(rows.isEmpty())return out;
         List<String> h=rows.get(0);Map<String,Integer> ix=new LinkedHashMap<>();for(int i=0;i<h.size();i++)ix.put(norm(h.get(i)),i);
         for(int r=1;r<rows.size();r++){
             List<String> row=rows.get(r);String pid=get(row,ix,"productid");String name=get(row,ix,"productname");
-            String date=firstNonBlank(get(row,ix,"transactiondate"),get(row,ix,"earningdate"),get(row,ix,"earningfordate"));
+            String date=firstNonBlank(get(row,ix,"transactiondate"),get(row,ix,"earningdate"),get(row,ix,"earningfordate"));String rowDay=dateKey(date);
+            if(!rowDay.isEmpty()&&(rowDay.compareTo(startDay)<0||rowDay.compareTo(targetDay)>0))continue;
             if(pid.isEmpty())pid=get(row,ix,"parentproductid");if(pid.isEmpty())pid=name;if(pid.isEmpty())continue;
             double earning=netUsd(row,ix);double gross=num(firstNonBlank(get(row,ix,"transactionamountusd"),get(row,ix,"totaltransactionamountusd"),get(row,ix,"revenueusd")));
             long qty=Math.max(0L,Math.round(num(get(row,ix,"quantity"))));

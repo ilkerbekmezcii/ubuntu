@@ -1,4 +1,4 @@
-name: Temporary Tiwoo Android Runner
+name: Temporary Private Android Runner
 
 on:
   push:
@@ -12,30 +12,29 @@ permissions:
   id-token: write
 
 concurrency:
-  group: tiwoo-android-temp
+  group: temporary-private-android-runner
   cancel-in-progress: true
 
 jobs:
-  test-build:
+  test-build-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Obtain GitHub OIDC token
+      - name: Obtain ephemeral runner identity
         shell: bash
         run: |
           set -euo pipefail
           TOKEN_JSON="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=tiwoo-public-runner")"
           OIDC_TOKEN="$(printf '%s' "$TOKEN_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
-          echo "OIDC_TOKEN=$OIDC_TOKEN" >> "$GITHUB_ENV"
+          echo "::add-mask::$OIDC_TOKEN"
+          printf 'OIDC_TOKEN=%s\n' "$OIDC_TOKEN" >> "$GITHUB_ENV"
 
-      - name: Fetch Tiwoo Android source into runner temp only
+      - name: Fetch private source to runner temp
         shell: bash
         run: |
           set -euo pipefail
-          SRC_JSON=/tmp/tiwoo-source.json
-          SRC_DIR=/tmp/tiwoo-android
+          SRC_JSON=/tmp/source.json
+          SRC_DIR=/tmp/android-src
           curl -fsS --retry 3 \
             -H "Authorization: Bearer ${OIDC_TOKEN}" \
             -H 'Cache-Control: no-store' \
@@ -52,95 +51,167 @@ jobs:
               p=root/rel
               p.parent.mkdir(parents=True,exist_ok=True)
               p.write_text(content,encoding='utf-8')
-          print('source_files=',len(files))
           PY
           rm -f "$SRC_JSON"
           test ! -e "$GITHUB_WORKSPACE/android"
           test ! -e "$GITHUB_WORKSPACE/tiwoo"
 
-      - name: Verify active-conversation notification guard
+      - name: Verify notification behavior
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          root=Path('/tmp/tiwoo-android')
+          root=Path('/tmp/android-src')
           java=(root/'app/src/main/java/com/earthgames/tiwoo/MainActivity.java').read_text()
           gradle=(root/'app/build.gradle').read_text()
-          required={
-            'active alias setter':'setActiveConversation(String aliasesJson)' in java,
-            'native suppression':'if (isActiveConversationNotification(key, type)) return;' in java,
-            'message-only guard':'!"message".equalsIgnoreCase(type)' in java,
-            'conversation prefix':'message:conversation:' in java,
-            'versionCode 2':'versionCode 2' in gradle,
-            'versionName 1.0.1':"versionName '1.0.1'" in gradle,
-          }
-          failed=[k for k,v in required.items() if not v]
-          print('guard_checks=',required)
-          if failed: raise SystemExit('failed: '+', '.join(failed))
+          assert 'setActiveConversation(String aliasesJson)' in java
+          assert 'if (isActiveConversationNotification(key, type)) return;' in java
+          assert '!"message".equalsIgnoreCase(type)' in java
+          assert 'message:conversation:' in java
+          assert 'versionCode 2' in gradle
+          assert "versionName '1.0.1'" in gradle
           def blocked(aliases,key,typ):
               if typ.lower()!='message' or key is None or not aliases: return False
               n=key.strip().lower()
               if not n.startswith('message:conversation:'): return False
               return any(n.startswith('message:conversation:'+a+':') for a in aliases)
           aliases={'alice@example.com','uid:abc123','abc123'}
-          cases=[
-              (blocked(aliases,'message:conversation:alice@example.com:100','message'),True,'same email'),
-              (blocked(aliases,'message:conversation:uid:abc123:101','message'),True,'same uid'),
-              (blocked(aliases,'message:conversation:bob@example.com:102','message'),False,'other user'),
-              (blocked(aliases,'message:conversation:alice@example.com:103','like'),False,'other type'),
-          ]
-          for actual,want,name in cases:
-              assert actual is want,(name,actual,want)
-          print('behavior_cases=4 PASS')
+          assert blocked(aliases,'message:conversation:alice@example.com:100','message') is True
+          assert blocked(aliases,'message:conversation:uid:abc123:101','message') is True
+          assert blocked(aliases,'message:conversation:bob@example.com:102','message') is False
+          assert blocked(aliases,'message:conversation:alice@example.com:103','like') is False
+          print('behavior_test=PASS')
           PY
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK 36
+      - name: Install Android SDK
         shell: bash
         run: |
           set -euo pipefail
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' >/dev/null
 
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+          cache-disabled: true
 
-      - name: Build APK and AAB
+      - name: Check Play version slot
         shell: bash
         run: |
           set -euo pipefail
-          gradle -p /tmp/tiwoo-android clean assembleDebug bundleRelease --stacktrace
-          APK=/tmp/tiwoo-android/app/build/outputs/apk/debug/app-debug.apk
-          AAB=/tmp/tiwoo-android/app/build/outputs/bundle/release/app-release.aab
-          test -s "$APK"
-          test -s "$AAB"
-          echo "APK_BYTES=$(stat -c%s "$APK")"
-          echo "AAB_BYTES=$(stat -c%s "$AAB")"
-          sha256sum "$APK" "$AAB" | sed 's#/tmp/tiwoo-android/##'
-          SIGN_LOG=/tmp/aab-sign.log
-          jarsigner -verify -verbose -certs "$AAB" >"$SIGN_LOG" 2>&1 || true
-          if grep -qi 'jar is unsigned' "$SIGN_LOG"; then
-            echo 'AAB_SIGNED=false'
-          elif grep -qi 'jar verified' "$SIGN_LOG"; then
-            echo 'AAB_SIGNED=true'
-            keytool -printcert -jarfile "$AAB" 2>/dev/null | grep -E 'SHA1:|SHA256:' || true
-          else
-            echo 'AAB_SIGNED=unknown'
-            tail -n 20 "$SIGN_LOG"
-            exit 1
-          fi
-          rm -f "$SIGN_LOG"
+          STATUS=/tmp/play-status.json
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -H 'Cache-Control: no-store' \
+            'https://avpjpoywjyhnvbaqxyip.supabase.co/functions/v1/tiwoo-appdist-upload-once-20260903' \
+            -o "$STATUS"
+          python3 - "$STATUS" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('ok') is True, d
+          assert int(d.get('maxVersionCode') or 0) < 2, 'versionCode 2 already used'
+          print('play_preflight=PASS')
+          PY
+          rm -f "$STATUS"
 
-      - name: Cleanup runner temp
+      - name: Build release APK and AAB
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle -p /tmp/android-src clean assembleRelease bundleRelease --stacktrace
+          test -s /tmp/android-src/app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s /tmp/android-src/app/build/outputs/bundle/release/app-release.aab
+          echo 'release_build=PASS'
+
+      - name: Sign and verify packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          SIGN_JSON=/tmp/sign.json
+          KS=/tmp/upload-key.jks
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -H 'Cache-Control: no-store' \
+            'https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-runner-signing-once' \
+            -o "$SIGN_JSON"
+          python3 - "$SIGN_JSON" "$KS" <<'PY'
+          import base64,json,sys,pathlib
+          d=json.load(open(sys.argv[1]))
+          pathlib.Path(sys.argv[2]).write_bytes(base64.b64decode(d['keystoreBase64']))
+          for key,name in [('keyAlias','alias'),('storePassword','storepass'),('keyPassword','keypass')]:
+              pathlib.Path('/tmp/'+name).write_text(str(d[key]),encoding='utf-8')
+          PY
+          rm -f "$SIGN_JSON"
+          ALIAS="$(cat /tmp/alias)"; SP="$(cat /tmp/storepass)"; KP="$(cat /tmp/keypass)"
+          AAB=/tmp/android-src/app/build/outputs/bundle/release/app-release.aab
+          UAPK=/tmp/android-src/app/build/outputs/apk/release/app-release-unsigned.apk
+          APK=/tmp/android-release.apk
+          jarsigner -keystore "$KS" -storepass "$SP" -keypass "$KP" -sigalg SHA256withRSA -digestalg SHA-256 "$AAB" "$ALIAS" >/dev/null
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" sign --ks "$KS" --ks-key-alias "$ALIAS" --ks-pass "pass:$SP" --key-pass "pass:$KP" --out "$APK" "$UAPK" >/dev/null
+          jarsigner -verify "$AAB" >/dev/null
+          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" verify "$APK" >/dev/null
+          test -s "$AAB" && test -s "$APK"
+          echo 'package_signing=PASS'
+          unset ALIAS SP KP
+          rm -f /tmp/alias /tmp/storepass /tmp/keypass "$KS"
+
+      - name: Publish bundle to internal testing
+        shell: bash
+        run: |
+          set -euo pipefail
+          AAB=/tmp/android-src/app/build/outputs/bundle/release/app-release.aab
+          RESULT=/tmp/publish.json
+          curl -fsS --retry 2 -X POST \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -H 'Cache-Control: no-store' \
+            -H 'Content-Type: application/octet-stream' \
+            -H 'x-version-name: 1.0.1' \
+            --data-binary "@$AAB" \
+            'https://avpjpoywjyhnvbaqxyip.supabase.co/functions/v1/tiwoo-appdist-upload-once-20260903' \
+            -o "$RESULT"
+          python3 - "$RESULT" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('ok') is True, d
+          assert d.get('stage')=='committed', d
+          assert d.get('track')=='internal', d
+          assert int(d.get('versionCode') or 0)==2, d
+          print('play_internal_publish=PASS versionCode=2')
+          PY
+          rm -f "$RESULT"
+
+      - name: Verify internal testing release
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=/tmp/play-status.json
+          curl -fsS --retry 3 \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -H 'Cache-Control: no-store' \
+            'https://avpjpoywjyhnvbaqxyip.supabase.co/functions/v1/tiwoo-appdist-upload-once-20260903' \
+            -o "$STATUS"
+          python3 - "$STATUS" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          assert d.get('ok') is True, d
+          internal=d.get('internal') or {}
+          releases=internal.get('releases') or []
+          assert any('2' in [str(v) for v in (r.get('versionCodes') or [])] for r in releases), d
+          print('play_internal_verify=PASS')
+          PY
+          rm -f "$STATUS"
+
+      - name: Cleanup ephemeral data
         if: always()
         shell: bash
         run: |
-          rm -rf /tmp/tiwoo-android /tmp/tiwoo-source.json /tmp/aab-sign.log
+          rm -rf /tmp/android-src /tmp/source.json /tmp/sign.json /tmp/upload-key.jks /tmp/android-release.apk /tmp/alias /tmp/storepass /tmp/keypass /tmp/play-status.json /tmp/publish.json
+          rm -rf "$HOME/.gradle/caches" "$HOME/.gradle/daemon" "$HOME/.gradle/notifications" || true

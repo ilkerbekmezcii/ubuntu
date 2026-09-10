@@ -81,7 +81,8 @@ public final class EarningsClient {
         for(int r=1;r<rows.size();r++){
             List<String> row=rows.get(r);String pid=get(row,ix,"productid");String name=get(row,ix,"productname");String date=get(row,ix,"earningdate");
             if(pid.isEmpty())pid=get(row,ix,"parentproductid");if(pid.isEmpty())pid=name;if(pid.isEmpty())continue;
-            double earning=num(get(row,ix,"earningamountusd"));double gross=num(get(row,ix,"transactionamountusd"));long qty=Math.max(0L,Math.round(num(get(row,ix,"quantity"))));
+            double earning=netUsd(row,ix);double gross=num(firstNonBlank(get(row,ix,"transactionamountusd"),get(row,ix,"totaltransactionamountusd"),get(row,ix,"revenueusd")));
+            long qty=Math.max(0L,Math.round(num(get(row,ix,"quantity"))));
             Product p=out.products.get(pid);if(p==null){p=new Product();p.id=pid;p.name=name.isEmpty()?pid:name;out.products.put(pid,p);}if(!name.isEmpty())p.name=name;
             p.net+=earning;p.gross+=gross;p.quantity+=qty;if(date!=null&&!date.isEmpty())p.lastDate=date;
             if(sameDay(date,targetDay)){p.todayNet+=earning;p.todayGross+=gross;p.todayQuantity+=qty;}
@@ -89,6 +90,19 @@ public final class EarningsClient {
         return out;
     }
 
+    private static double netUsd(List<String> row,Map<String,Integer> ix){
+        String usd=firstNonBlank(get(row,ix,"earningamountusd"),get(row,ix,"earningamountinusd"),get(row,ix,"earningsusd"),get(row,ix,"netearningusd"));
+        if(!usd.isEmpty())return num(usd);
+        String amount=get(row,ix,"earningamount");if(amount.isEmpty())return 0d;
+        double original=num(amount);
+        String currency=get(row,ix,"transactioncurrency");
+        if("USD".equalsIgnoreCase(currency))return original;
+        String rate=get(row,ix,"earningexchangerate");
+        if(!rate.isEmpty()){double x=num(rate);if(x!=0d)return original*x;}
+        return 0d;
+    }
+
+    private static String firstNonBlank(String... values){for(String s:values)if(s!=null&&!s.trim().isEmpty())return s.trim();return "";}
     private static boolean sameDay(String date,String day){if(date==null||day==null)return false;return date.startsWith(day);}
     private static String norm(String s){return s==null?"":s.replace("\uFEFF","").trim().toLowerCase(Locale.US).replace(" ","").replace("_","");}
     private static String get(List<String> r,Map<String,Integer> ix,String k){Integer i=ix.get(k);return i==null||i<0||i>=r.size()?"":r.get(i).trim();}

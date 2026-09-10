@@ -47,11 +47,10 @@ public final class ReportStore {
     }
 
     private JSONObject json(String key){try{return new JSONObject(p.getString(key,"{}"));}catch(Exception e){return new JSONObject();}}
-
     private static double finite(double v){return Double.isNaN(v)||Double.isInfinite(v)?0d:v;}
 
     public static final class Report {
-        public double dailySales,monthlySales,dailyLeaderSales,monthlyLeaderSales;
+        public double dailySales,monthlySales,dailyNet,monthlyNet,dailyLeaderSales,monthlyLeaderSales,dailyLeaderNet,monthlyLeaderNet;
         public long dailyAcq,monthlyAcq,dailyLeaderAcq,monthlyLeaderAcq,updatedAt;
         public int appCount;
         public String dailyLeader="—",monthlyLeader="—";
@@ -60,9 +59,11 @@ public final class ReportStore {
             JSONObject j=new JSONObject();
             try{
                 j.put("dailySales",finite(dailySales));j.put("monthlySales",finite(monthlySales));
+                j.put("dailyNet",finite(dailyNet));j.put("monthlyNet",finite(monthlyNet));
                 j.put("dailyAcq",Math.max(0,dailyAcq));j.put("monthlyAcq",Math.max(0,monthlyAcq));
                 j.put("dailyLeader",safeName(dailyLeader));j.put("monthlyLeader",safeName(monthlyLeader));
                 j.put("dailyLeaderSales",finite(dailyLeaderSales));j.put("monthlyLeaderSales",finite(monthlyLeaderSales));
+                j.put("dailyLeaderNet",finite(dailyLeaderNet));j.put("monthlyLeaderNet",finite(monthlyLeaderNet));
                 j.put("dailyLeaderAcq",Math.max(0,dailyLeaderAcq));j.put("monthlyLeaderAcq",Math.max(0,monthlyLeaderAcq));
                 j.put("appCount",Math.max(0,appCount));j.put("updatedAt",Math.max(0,updatedAt));
             }catch(Exception ignored){}
@@ -72,9 +73,11 @@ public final class ReportStore {
         static Report fromJson(JSONObject j){
             Report r=new Report();
             r.dailySales=finite(j.optDouble("dailySales",0d));r.monthlySales=finite(j.optDouble("monthlySales",0d));
+            r.dailyNet=finite(j.optDouble("dailyNet",0d));r.monthlyNet=finite(j.optDouble("monthlyNet",0d));
             r.dailyAcq=Math.max(0,j.optLong("dailyAcq",0));r.monthlyAcq=Math.max(0,j.optLong("monthlyAcq",0));
             r.dailyLeader=safeName(j.optString("dailyLeader","—"));r.monthlyLeader=safeName(j.optString("monthlyLeader","—"));
             r.dailyLeaderSales=finite(j.optDouble("dailyLeaderSales",0d));r.monthlyLeaderSales=finite(j.optDouble("monthlyLeaderSales",0d));
+            r.dailyLeaderNet=finite(j.optDouble("dailyLeaderNet",0d));r.monthlyLeaderNet=finite(j.optDouble("monthlyLeaderNet",0d));
             r.dailyLeaderAcq=Math.max(0,j.optLong("dailyLeaderAcq",0));r.monthlyLeaderAcq=Math.max(0,j.optLong("monthlyLeaderAcq",0));
             r.appCount=Math.max(0,j.optInt("appCount",0));r.updatedAt=Math.max(0,j.optLong("updatedAt",0));
             return r;

@@ -18,13 +18,14 @@ import java.util.Locale;
 public final class SalesMonitorService extends Service {
     private static final int ONGOING=7201,SALE_BASE=7202;
     private static final String CH="microsoft_report_monitor",SALES="microsoft_report_sales";
+    private static final long SYNC_INTERVAL_MS=2L*60L*1000L;
     private volatile boolean stop;private Thread worker;private ReportStore store;private CredentialStore credentials;private PowerManager.WakeLock wakeLock;
 
     @Override public void onCreate(){
         super.onCreate();store=new ReportStore(this);credentials=new CredentialStore(this);channels();
         PowerManager pm=(PowerManager)getSystemService(POWER_SERVICE);
         if(pm!=null){wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"MicrosoftRapor:LiveSync");wakeLock.setReferenceCounted(false);wakeLock.acquire();}
-        startForeground(ONGOING,note(CH,"Microsoft Rapor canlı senkronizasyon","Canlı sorgu başlatılıyor",true));
+        startForeground(ONGOING,note(CH,"Microsoft Rapor canlı senkronizasyon","2 dakikalık canlı sorgu başlatılıyor",true));
     }
 
     @Override public int onStartCommand(Intent i,int f,int id){
@@ -34,35 +35,27 @@ public final class SalesMonitorService extends Service {
     }
 
     private void loop(){
-        long backoff=1000L;
+        long backoff=2000L;
         while(!stop&&credentials.hasCredentials()){
+            long cycleStarted=System.currentTimeMillis();
             String today=new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());
             boolean hadTodayBaseline=today.equals(store.syncDay())&&store.syncDayValues().length()>0;
             JSONObject beforeDay=hadTodayBaseline?store.syncDayValues():new JSONObject();
             try{
                 ReportRepository repo=new ReportRepository(credentials,store);
                 store.markSyncAttempt("Earnings sorgulanıyor");update("Earnings sorgulanıyor • "+time());
-                try{
-                    repo.refresh(null);
-                    store.markSyncSuccess("Earnings");update("CANLI • Earnings • "+time());
-                }catch(Exception earningsError){
-                    String ee=safe(earningsError);
-                    store.markSyncAttempt("Earnings başarısız • Acquisition fallback");update("Earnings başarısız • Acquisition taranıyor");
-                    try{
-                        repo.refreshLegacyGross(null);
-                        store.markSyncFallback("Acquisition",ee);update("CANLI • Acquisition fallback • "+time());
-                    }catch(Exception fallbackError){
-                        String both="Earnings: "+ee+" | Acquisition: "+safe(fallbackError);store.markSyncError(both);throw new Exception(both);
-                    }
-                }
+                repo.refresh(null);
+                store.markSyncSuccess("Earnings");update("CANLI • Earnings • "+time()+" • sonraki 2 dk");
                 JSONObject afterDay=today.equals(store.syncDay())?store.syncDayValues():new JSONObject();
                 if(store.monitorEnabled()&&hadTodayBaseline)notifyProductDeltas(beforeDay,afterDay);
-                backoff=1000L;
+                backoff=2000L;
+                long wait=SYNC_INTERVAL_MS-(System.currentTimeMillis()-cycleStarted);
+                if(wait>0L)Thread.sleep(wait);
             }catch(InterruptedException e){break;}
             catch(Exception e){
-                store.markSyncError(safe(e));update("Yeniden deneniyor • "+shortText(safe(e)));
+                store.markSyncError(safe(e));update("Earnings yeniden deneniyor • "+shortText(safe(e)));
                 try{Thread.sleep(backoff);}catch(InterruptedException x){break;}
-                backoff=Math.min(15000L,backoff*2L);
+                backoff=Math.min(60000L,backoff*2L);
             }
         }
         stopSelf();

@@ -24,34 +24,43 @@ public final class SalesMonitorService extends Service {
         super.onCreate();store=new ReportStore(this);credentials=new CredentialStore(this);channels();
         PowerManager pm=(PowerManager)getSystemService(POWER_SERVICE);
         if(pm!=null){wakeLock=pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"MicrosoftRapor:LiveSync");wakeLock.setReferenceCounted(false);wakeLock.acquire();}
-        startForeground(ONGOING,note(CH,"Microsoft Rapor canlı senkronizasyon","Earnings sürekli sorgu başlatılıyor",true));
+        startForeground(ONGOING,note(CH,"Microsoft Rapor canlı senkronizasyon","Canlı sorgu başlatılıyor",true));
     }
 
     @Override public int onStartCommand(Intent i,int f,int id){
         if(!credentials.hasCredentials()){stopSelf();return START_NOT_STICKY;}
-        if(worker==null||!worker.isAlive()){stop=false;worker=new Thread(this::loop,"microsoft-report-earnings-live");worker.start();}
+        if(worker==null||!worker.isAlive()){stop=false;worker=new Thread(this::loop,"microsoft-report-live");worker.start();}
         return START_STICKY;
     }
 
     private void loop(){
         long backoff=1000L;
         while(!stop&&credentials.hasCredentials()){
+            String today=new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());
+            boolean hadTodayBaseline=today.equals(store.syncDay())&&store.syncDayValues().length()>0;
+            JSONObject beforeDay=hadTodayBaseline?store.syncDayValues():new JSONObject();
             try{
-                String today=new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());
-                boolean hadTodayBaseline=today.equals(store.syncDay())&&store.syncDayValues().length()>0;
-                JSONObject beforeDay=hadTodayBaseline?store.syncDayValues():new JSONObject();
-
-                new ReportRepository(credentials,store).refresh(null);
+                ReportRepository repo=new ReportRepository(credentials,store);
+                store.markSyncAttempt("Earnings sorgulanıyor");update("Earnings sorgulanıyor • "+time());
+                try{
+                    repo.refresh(null);
+                    store.markSyncSuccess("Earnings");update("CANLI • Earnings • "+time());
+                }catch(Exception earningsError){
+                    String ee=safe(earningsError);
+                    store.markSyncAttempt("Earnings başarısız • Acquisition fallback");update("Earnings başarısız • Acquisition taranıyor");
+                    try{
+                        repo.refreshLegacyGross(null);
+                        store.markSyncFallback("Acquisition",ee);update("CANLI • Acquisition fallback • "+time());
+                    }catch(Exception fallbackError){
+                        String both="Earnings: "+ee+" | Acquisition: "+safe(fallbackError);store.markSyncError(both);throw new Exception(both);
+                    }
+                }
                 JSONObject afterDay=today.equals(store.syncDay())?store.syncDayValues():new JSONObject();
-
-                update("CANLI • "+new SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(new Date()));
                 if(store.monitorEnabled()&&hadTodayBaseline)notifyProductDeltas(beforeDay,afterDay);
-
                 backoff=1000L;
-                // Başarılı sorgudan sonra bekleme yok: sonuç gelir gelmez yeni earnings sorgusu başlar.
             }catch(InterruptedException e){break;}
             catch(Exception e){
-                update("Earnings yeniden deneniyor • "+safe(e));
+                store.markSyncError(safe(e));update("Yeniden deneniyor • "+shortText(safe(e)));
                 try{Thread.sleep(backoff);}catch(InterruptedException x){break;}
                 backoff=Math.min(15000L,backoff*2L);
             }
@@ -60,17 +69,10 @@ public final class SalesMonitorService extends Service {
     }
 
     private void notifyProductDeltas(JSONObject before,JSONObject after){
-        Iterator<String> keys=after.keys();
-        while(keys.hasNext()){
-            String id=keys.next();
-            JSONObject now=after.optJSONObject(id);if(now==null)continue;
-            JSONObject old=before.optJSONObject(id);
-            double nowGross=finite(now.optDouble("sales",0d));
-            double oldGross=old==null?0d:finite(old.optDouble("sales",0d));
-            double delta=nowGross-oldGross;
-            if(delta<=0.000001d)continue;
-            String name=cleanName(now.optString("name",id),id);
-            notifySale(id,name,delta);
+        Iterator<String> keys=after.keys();while(keys.hasNext()){
+            String id=keys.next();JSONObject now=after.optJSONObject(id);if(now==null)continue;JSONObject old=before.optJSONObject(id);
+            double delta=finite(now.optDouble("sales",0d))-(old==null?0d:finite(old.optDouble("sales",0d)));if(delta<=0.000001d)continue;
+            notifySale(id,cleanName(now.optString("name",id),id),delta);
         }
     }
 
@@ -82,15 +84,12 @@ public final class SalesMonitorService extends Service {
         super.onTaskRemoved(rootIntent);
     }
 
-    private void notifySale(String productId,String name,double delta){
-        String text=String.format(Locale.US,"%s +$%.2f",name,delta);
-        int id=SALE_BASE+Math.abs((productId==null?name:productId).hashCode()%100000);
-        ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(id,note(SALES,"Yeni Microsoft Store satışı",text,false));
-    }
-
+    private void notifySale(String productId,String name,double delta){String text=String.format(Locale.US,"%s +$%.2f",name,delta);int id=SALE_BASE+Math.abs((productId==null?name:productId).hashCode()%100000);((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(id,note(SALES,"Yeni Microsoft Store satışı",text,false));}
     private void channels(){if(Build.VERSION.SDK_INT>=26){NotificationManager n=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);n.createNotificationChannel(new NotificationChannel(CH,"Microsoft Rapor canlı senkronizasyon",NotificationManager.IMPORTANCE_LOW));n.createNotificationChannel(new NotificationChannel(SALES,"Yeni satışlar",NotificationManager.IMPORTANCE_HIGH));}}
     private Notification note(String channel,String title,String text,boolean ongoing){Intent open=new Intent(this,MainActivity.class);PendingIntent pi=PendingIntent.getActivity(this,0,open,PendingIntent.FLAG_UPDATE_CURRENT|PendingIntent.FLAG_IMMUTABLE);Notification.Builder b=Build.VERSION.SDK_INT>=26?new Notification.Builder(this,channel):new Notification.Builder(this);return b.setContentTitle(title).setContentText(text).setSmallIcon(android.R.drawable.stat_notify_sync).setContentIntent(pi).setOngoing(ongoing).setAutoCancel(!ongoing).build();}
     private void update(String text){((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(ONGOING,note(CH,"Microsoft Rapor canlı senkronizasyon",text,true));}
+    private static String time(){return new SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(new Date());}
+    private static String shortText(String s){return s==null?"Hata":(s.length()>72?s.substring(0,72)+"…":s);}
     private static String cleanName(String name,String fallback){return name==null||name.trim().isEmpty()||"—".equals(name)?fallback:name;}
     private static double finite(double v){return Double.isNaN(v)||Double.isInfinite(v)?0d:v;}
     private static String safe(Exception e){String m=e.getMessage();return m==null?e.getClass().getSimpleName():m;}

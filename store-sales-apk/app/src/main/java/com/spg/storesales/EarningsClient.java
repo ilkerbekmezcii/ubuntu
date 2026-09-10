@@ -39,10 +39,10 @@ public final class EarningsClient {
             if(System.currentTimeMillis()>=deadline)throw new Exception("Earnings raporu zaman aşımına uğradı");
             Thread.sleep(500L);
             JSONObject s=request("GET",API+"/"+URLEncoder.encode(id,"UTF-8"),t);
-            item=first(s); status=item.optString("status"); blob=item.optString("blobLocation");
+            item=first(s);status=item.optString("status");blob=item.optString("blobLocation");
         }
         if(blob==null||blob.isEmpty())throw new Exception("Earnings blob alınamadı");
-        return parseCsv(download(blob));
+        return parseCsv(download(blob),end);
     }
 
     private String token() throws Exception {
@@ -75,7 +75,7 @@ public final class EarningsClient {
         try{x.setConnectTimeout(10000);x.setReadTimeout(30000);int c=x.getResponseCode();if(c<200||c>=300)throw new Exception("Earnings CSV HTTP "+c);return read(x,c);}finally{x.disconnect();}
     }
 
-    private static Result parseCsv(String csv){
+    private static Result parseCsv(String csv,String targetDay){
         List<List<String>> rows=csv(csv);Result out=new Result();if(rows.isEmpty())return out;
         List<String> h=rows.get(0);Map<String,Integer> ix=new LinkedHashMap<>();for(int i=0;i<h.size();i++)ix.put(norm(h.get(i)),i);
         for(int r=1;r<rows.size();r++){
@@ -84,10 +84,12 @@ public final class EarningsClient {
             double earning=num(get(row,ix,"earningamountusd"));double gross=num(get(row,ix,"transactionamountusd"));long qty=Math.max(0L,Math.round(num(get(row,ix,"quantity"))));
             Product p=out.products.get(pid);if(p==null){p=new Product();p.id=pid;p.name=name.isEmpty()?pid:name;out.products.put(pid,p);}if(!name.isEmpty())p.name=name;
             p.net+=earning;p.gross+=gross;p.quantity+=qty;if(date!=null&&!date.isEmpty())p.lastDate=date;
+            if(sameDay(date,targetDay)){p.todayNet+=earning;p.todayGross+=gross;p.todayQuantity+=qty;}
         }
         return out;
     }
 
+    private static boolean sameDay(String date,String day){if(date==null||day==null)return false;return date.startsWith(day);}
     private static String norm(String s){return s==null?"":s.replace("\uFEFF","").trim().toLowerCase(Locale.US).replace(" ","").replace("_","");}
     private static String get(List<String> r,Map<String,Integer> ix,String k){Integer i=ix.get(k);return i==null||i<0||i>=r.size()?"":r.get(i).trim();}
     private static double num(String s){try{return s==null||s.trim().isEmpty()?0d:Double.parseDouble(s.trim());}catch(Exception e){return 0d;}}
@@ -100,6 +102,6 @@ public final class EarningsClient {
     private static String enc(String s)throws Exception{return URLEncoder.encode(s,"UTF-8");}
     private static String read(HttpURLConnection x,int code)throws Exception{InputStream in=code>=200&&code<400?x.getInputStream():x.getErrorStream();if(in==null)return "";ByteArrayOutputStream o=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;while((n=in.read(b))!=-1)o.write(b,0,n);return o.toString("UTF-8");}
 
-    public static final class Product{public String id,name,lastDate;public double gross,net;public long quantity;}
+    public static final class Product{public String id,name,lastDate;public double gross,net,todayGross,todayNet;public long quantity,todayQuantity;}
     public static final class Result{public final Map<String,Product> products=new LinkedHashMap<>();}
 }

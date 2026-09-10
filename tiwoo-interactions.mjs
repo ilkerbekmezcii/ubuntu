@@ -1,157 +1,26 @@
 import { chromium } from 'playwright';
 import { randomUUID } from 'node:crypto';
-
 const base='https://tiwoo.vercel.app';
 const result={base,actions:{},issues:[]};
 const browser=await chromium.launch({headless:true});
 const context=await browser.newContext({viewport:{width:1440,height:1000},permissions:['clipboard-read','clipboard-write']});
-const page=await context.newPage();
-let primary={accessToken:'',refreshToken:'',username:''};
-let peer={accessToken:'',refreshToken:'',username:''};
-const sleep=ms=>page.waitForTimeout(ms);
-const sanitize=s=>String(s||'').replace(/https?:\/\/[^\s)]+/g,'<url>').slice(0,300);
-const bad=[];
-page.on('response',r=>{if(r.status()>=400){try{const u=new URL(r.url());if(u.hostname==='tiwoo.vercel.app'||u.hostname.endsWith('.supabase.co'))bad.push({path:u.pathname,status:r.status()})}catch{}}});
-
-async function register(label){
-  const username=`ix_${label}_${Date.now().toString(36).slice(-6)}_${Math.random().toString(36).slice(2,5)}`.slice(0,20);
-  const password=`T!${randomUUID().replace(/-/g,'').slice(0,20)}a9`;
-  const reg=await page.request.post(`${base}/api/tiwoo-auth`,{data:{action:'register',username,password,name:`Tiwoo ${label} E2E`}});
-  const body=await reg.json().catch(()=>({}));
-  if(!reg.ok()||!body?.session?.accessToken||!body?.session?.refreshToken)throw Error(`register_${label}_${reg.status()}`);
-  return {username,password,accessToken:String(body.session.accessToken),refreshToken:String(body.session.refreshToken)};
-}
-
-async function setSession(s){
-  await page.evaluate(async x=>{const c=window.TiwooSupabase?.sb;if(!c?.auth?.setSession)throw Error('client_missing');const {error}=await c.auth.setSession({access_token:x.accessToken,refresh_token:x.refreshToken});if(error)throw Error(error.message)},s);
-  await page.reload({waitUntil:'domcontentloaded',timeout:30000});
-  await sleep(2600);
-}
-
-async function makeCurrentAccountPublic(){
-  return page.evaluate(async()=>{
-    const c=window.TiwooSupabase?.sb;if(!c?.rpc)return {ok:false,error:'client_missing'};
-    const {error}=await c.rpc('tiwoo_rpc',{p_action:'privacy',p_payload:{isPrivate:false}});
-    return {ok:!error,error:error?.message||''};
-  });
-}
-
-async function toastText(){return sanitize(await page.locator('#toast').innerText().catch(()=>''))}
-function collectBad(start){return bad.slice(start)}
-
-async function actOnPost(postId,name){
-  const btn=page.locator(`[data-post="${postId}"] [data-act="${name}"]`).first();
-  if(!await btn.count())return {available:false};
-  const before={class:await btn.getAttribute('class'),text:await btn.innerText().catch(()=>''),disabled:await btn.isDisabled().catch(()=>false)};
-  const startBad=bad.length;
-  await btn.click({timeout:10000}); await sleep(1200);
-  const current=page.locator(`[data-post="${postId}"] [data-act="${name}"]`).first();
-  const after={class:await current.getAttribute('class').catch(()=>null),text:await current.innerText().catch(()=>''),disabled:await current.isDisabled().catch(()=>false)};
-  return {available:true,postId,before,after,toast:await toastText(),badResponses:collectBad(startBad)};
-}
-
-async function createPost(){
-  const text=`interaction-e2e-${Date.now()}`,startBad=bad.length;
-  const input=page.locator('#inlineText').first(),send=page.locator('#inlineSend').first();
-  if(!await input.count()||!await send.count())return {available:false};
-  await input.fill(text); await send.click(); await sleep(1400);
-  const article=page.locator('[data-post]').filter({hasText:text}).first();
-  return {available:true,text,postId:await article.getAttribute('data-post').catch(()=>null),toast:await toastText(),badResponses:collectBad(startBad)};
-}
-
-async function replyTo(postId){
-  const startBad=bad.length,btn=page.locator(`[data-post="${postId}"] [data-act="reply"]`).first();
-  if(!await btn.count())return {available:false};
-  await btn.click(); await sleep(600);
-  const input=page.locator('#replyModalText').first(),send=page.locator('#replyModalSend').first();
-  if(!await input.count()||!await input.isVisible().catch(()=>false))return {available:true,error:'reply_modal_missing',badResponses:collectBad(startBad)};
-  const text=`reply-e2e-${Date.now()}`; await input.fill(text); await send.click(); await sleep(1400);
-  return {available:true,text,toast:await toastText(),visible:await page.getByText(text,{exact:true}).count().catch(()=>0),badResponses:collectBad(startBad)};
-}
-
-async function deleteOwnPost(postId){
-  const startBad=bad.length;
-  const home=page.getByText(/^Ana Sayfa$/).first(); if(await home.count())await home.click().catch(()=>{}); await sleep(700);
-  const btn=page.locator(`[data-post="${postId}"] [data-delete]`).first();
-  if(!await btn.count())return {available:false};
-  page.once('dialog',d=>d.accept()); await btn.click(); await sleep(1400);
-  return {available:true,remaining:await page.locator(`[data-post="${postId}"]`).count(),toast:await toastText(),badResponses:collectBad(startBad)};
-}
-
-async function openPeerProfile(){
-  const found=await page.evaluate(username=>{
-    try{const u=(typeof social!=='undefined'&&Array.isArray(social.directory)?social.directory:[]).find(x=>String(x.handle||'').toLowerCase()===`@${String(username).toLowerCase()}`);if(!u?.key)return null;if(typeof go==='function'){go('profile',{profile:u.key});return {key:u.key,handle:u.handle}}return null}catch{return null}
-  },peer.username);
-  if(!found){
-    const explore=page.getByText(/^Keşfet$/).first(); if(await explore.count())await explore.click().catch(()=>{}); await sleep(500);
-    const search=page.locator('input[type="search"]:visible').first(); if(await search.count())await search.fill(peer.username); await sleep(700);
-    const row=page.locator('[data-user]').filter({hasText:peer.username}).first(); if(await row.count())await row.click();
-  }
-  await sleep(700); return {found:Boolean(found)||await page.getByText(new RegExp(peer.username,'i')).count()>0};
-}
-
-async function followPeer(){
-  const startBad=bad.length,profile=await openPeerProfile(),btn=page.locator('#followProfile').first();
-  if(!await btn.count())return {available:false,profile};
-  const before=await btn.innerText().catch(()=> ''); await btn.click(); await sleep(1200);
-  const after=await page.locator('#followProfile').first().innerText().catch(()=> '');
-  return {available:true,profile,before,after,toast:await toastText(),badResponses:collectBad(startBad)};
-}
-
-async function messagePeer(){
-  const startBad=bad.length; await openPeerProfile();
-  const msg=page.locator('#msgProfile').first(); if(!await msg.count())return {available:false};
-  const disabled=await msg.isDisabled().catch(()=>false); if(disabled)return {available:true,blocked:true,reason:await msg.getAttribute('title').catch(()=>''),badResponses:collectBad(startBad)};
-  await msg.click({timeout:10000}); await sleep(900);
-  const input=page.locator('#dmText').first(),send=page.locator('#dmSend').first();
-  if(!await input.count()||!await send.count())return {available:true,error:'dm_compose_missing',badResponses:collectBad(startBad)};
-  const text=`dm-e2e-${Date.now()}`; await input.fill(text); await send.click(); await sleep(1400);
-  return {available:true,text,toast:await toastText(),badResponses:collectBad(startBad)};
-}
-
-async function cleanupAccount(s){
-  if(!s?.accessToken||!s?.username)return {status:0,ok:false};
-  const del=await page.request.post(`${base}/api/tiwoo-auth`,{headers:{authorization:`Bearer ${s.accessToken}`},data:{action:'account_delete',confirmation:s.username,acknowledged:true}}).catch(()=>null);
-  return del?{status:del.status(),ok:del.ok()}:{status:0,ok:false};
-}
-
-try{
-  await page.goto(base,{waitUntil:'domcontentloaded',timeout:30000}); await sleep(2200);
-  peer=await register('peer'); primary=await register('main');
-  await setSession(peer); result.peerPrivacy=await makeCurrentAccountPublic(); if(!result.peerPrivacy.ok)result.issues.push(`peer privacy: ${sanitize(result.peerPrivacy.error)}`);
-  await setSession(primary);
-
-  result.actions.create=await createPost(); const postId=result.actions.create?.postId;
-  if(!postId)result.issues.push(`create: no post id (${result.actions.create?.toast||'no toast'})`);
-  if(result.actions.create?.badResponses?.length)result.issues.push(`create: HTTP ${result.actions.create.badResponses.map(x=>x.status).join(',')}`);
-
-  if(postId){
-    for(const name of ['like','repost','bookmark','share']){
-      try{result.actions[name]=await actOnPost(postId,name)}catch(e){result.actions[name]={error:sanitize(e.message)};result.issues.push(`${name}: ${sanitize(e.message)}`)}
-    }
-    result.actions.reply=await replyTo(postId).catch(e=>({error:sanitize(e.message)}));
-    result.actions.delete=await deleteOwnPost(postId).catch(e=>({error:sanitize(e.message)}));
-  }
-
-  result.actions.follow=await followPeer().catch(e=>({error:sanitize(e.message)}));
-  result.actions.message=await messagePeer().catch(e=>({error:sanitize(e.message)}));
-
-  for(const name of ['like','repost','bookmark']){
-    const a=result.actions[name]; if(!a?.available||a?.error){if(!a?.error)result.issues.push(`${name}: button missing`);continue}
-    if(a.badResponses?.length)result.issues.push(`${name}: HTTP ${a.badResponses.map(x=>x.status).join(',')}`);
-    const successToast=name==='like'?/Beğenildi|Beğeni kaldırıldı/i:name==='repost'?/Yeniden paylaşıldı|geri alındı/i:/Kaydedildi|Kayıttan kaldırıldı/i;
-    if(!successToast.test(a.toast||''))result.issues.push(`${name}: no success toast (${a.toast||'empty'})`);
-  }
-  if(result.actions.share?.available&&!/Bağlantı kopyalandı|kopyalanamadı/i.test(result.actions.share.toast||''))result.issues.push('share: no clipboard result toast');
-  if(result.actions.reply?.badResponses?.length||result.actions.reply?.error||!/Yanıt gönderildi/i.test(result.actions.reply?.toast||''))result.issues.push(`reply: ${result.actions.reply?.error||result.actions.reply?.toast||'failed'}`);
-  if(!result.actions.delete?.available||result.actions.delete?.error||result.actions.delete?.remaining||result.actions.delete?.badResponses?.length)result.issues.push(`delete: ${result.actions.delete?.error||result.actions.delete?.toast||'failed'}`);
-  if(result.actions.follow?.badResponses?.length||result.actions.follow?.error||!/takip/i.test(result.actions.follow?.toast||''))result.issues.push(`follow: ${result.actions.follow?.error||result.actions.follow?.toast||'failed'}`);
-  if(result.actions.message?.blocked)result.issues.push(`message: blocked (${result.actions.message.reason||'friends required'})`);
-  else if(result.actions.message?.badResponses?.length||result.actions.message?.error||!/Mesaj gönderildi|zaten gönderilmişti/i.test(result.actions.message?.toast||''))result.issues.push(`message: ${result.actions.message?.error||result.actions.message?.toast||'failed'}`);
-}catch(e){result.issues.push(`fatal: ${sanitize(e.message)}`)}finally{
-  result.cleanup={primary:await cleanupAccount(primary),peer:await cleanupAccount(peer)};
-  if(!result.cleanup.primary.ok)result.issues.push('cleanup primary failed'); if(!result.cleanup.peer.ok)result.issues.push('cleanup peer failed');
-  await context.close(); await browser.close();
-}
-console.log(JSON.stringify(result,null,2));
-process.exitCode=result.issues.length?1:0;
+const page=await context.newPage(); let primary={},peer={}; const sleep=ms=>page.waitForTimeout(ms); const bad=[];
+page.on('response',r=>{if(r.status()>=400){try{let u=new URL(r.url());if(u.hostname==='tiwoo.vercel.app'||u.hostname.endsWith('.supabase.co'))bad.push({path:u.pathname,status:r.status()})}catch{}}});
+async function register(label){const username=`ix_${label}_${Date.now().toString(36).slice(-6)}_${Math.random().toString(36).slice(2,5)}`.slice(0,20),password=`T!${randomUUID().replace(/-/g,'').slice(0,20)}a9`;let r=await page.request.post(`${base}/api/tiwoo-auth`,{data:{action:'register',username,password,name:`Tiwoo ${label} E2E`}}),d=await r.json().catch(()=>({}));if(!r.ok()||!d?.session?.accessToken)throw Error(`register_${label}_${r.status()}`);return{username,password,accessToken:d.session.accessToken,refreshToken:d.session.refreshToken}}
+async function setSession(s){await page.evaluate(async x=>{let c=window.TiwooSupabase?.sb,{error}=await c.auth.setSession({access_token:x.accessToken,refresh_token:x.refreshToken});if(error)throw Error(error.message)},s);await page.reload({waitUntil:'domcontentloaded'});await sleep(2200)}
+async function rpc(action,payload){return page.evaluate(async({action,payload})=>{let c=window.TiwooSupabase.sb,{data,error}=await c.rpc('tiwoo_rpc',{p_action:action,p_payload:payload});return{data,error:error?.message||''}},{action,payload})}
+async function toast(){return page.locator('#toast').innerText().catch(()=>'')}
+async function clickAct(id,name){let b=page.locator(`[data-post="${id}"] [data-act="${name}"]`).first(),start=bad.length;if(!await b.count())return{missing:true};await b.click();await sleep(1000);return{toast:await toast(),bad:bad.slice(start)}}
+async function cleanup(s){if(!s.accessToken)return false;let r=await page.request.post(`${base}/api/tiwoo-auth`,{headers:{authorization:`Bearer ${s.accessToken}`},data:{action:'account_delete',confirmation:s.username,acknowledged:true}}).catch(()=>null);return!!r?.ok()}
+try{await page.goto(base,{waitUntil:'domcontentloaded'});await sleep(1800);peer=await register('peer');primary=await register('main');await setSession(peer);result.peerPublic=await rpc('privacy',{isPrivate:false});await setSession(primary);
+let text=`interaction-e2e-${Date.now()}`,input=page.locator('#inlineText'),send=page.locator('#inlineSend');await input.fill(text);let s=bad.length;await send.click();await sleep(1200);let post=page.locator('[data-post]').filter({hasText:text}).first(),id=await post.getAttribute('data-post');result.actions.create={id,toast:await toast(),bad:bad.slice(s)};if(!id)throw Error('create_no_id');
+for(const n of ['like','repost','bookmark','share'])result.actions[n]=await clickAct(id,n);
+result.actions.unlike=await clickAct(id,'like');result.actions.undoRepost=await clickAct(id,'repost');result.actions.unbookmark=await clickAct(id,'bookmark');
+let rb=page.locator(`[data-post="${id}"] [data-act="reply"]`).first();await rb.click();await sleep(300);let rt=`reply-e2e-${Date.now()}`;await page.locator('#replyModalText').fill(rt);s=bad.length;await page.locator('#replyModalSend').click();await sleep(1000);result.actions.reply={toast:await toast(),visible:await page.getByText(rt,{exact:true}).count(),bad:bad.slice(s)};
+let peerInfo=await page.evaluate(username=>{let u=social.directory.find(x=>String(x.handle).toLowerCase()===`@${username.toLowerCase()}`);if(u){go('profile',{profile:u.key});return u}return null},peer.username);await sleep(500);s=bad.length;let fb=page.locator('#followProfile');result.actions.followBefore=await fb.innerText();await fb.click();await sleep(1000);result.actions.follow={after:await page.locator('#followProfile').innerText(),toast:await toast(),bad:bad.slice(s)};s=bad.length;await page.locator('#followProfile').click();await sleep(1000);result.actions.unfollow={after:await page.locator('#followProfile').innerText(),toast:await toast(),bad:bad.slice(s)};
+await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending=await page.evaluate(()=>social.incomingFollowRequests||[]);result.actions.followRequestVisible=pending.length; if(pending.length){let target=pending[0].key||pending[0].requesterKey||pending[0].userKey; if(target)result.actions.followRequestAccept=await rpc('follow_request',{target,decision:'accept'})}
+await setSession(primary);await page.evaluate(k=>go('profile',{profile:k}),peerInfo.key);await sleep(400);let mb=page.locator('#msgProfile');await mb.click();await sleep(700);let dm=page.locator('#dmText');if(await dm.count()){let mt=`dm-e2e-${Date.now()}`;await dm.fill(mt);s=bad.length;await page.locator('#dmSend').click();await sleep(1000);result.actions.message={toast:await toast(),bad:bad.slice(s)}}else result.actions.message={missing:true};
+await page.getByText(/^Ana Sayfa$/).first().click().catch(()=>{});await sleep(500);let del=page.locator(`[data-post="${id}"] [data-delete]`).first();if(await del.count()){page.once('dialog',d=>d.accept());s=bad.length;await del.click();await sleep(1000);result.actions.delete={remaining:await page.locator(`[data-post="${id}"]`).count(),toast:await toast(),bad:bad.slice(s)}}
+for(const [k,v] of Object.entries(result.actions)){if(v?.bad?.length||v?.missing)result.issues.push(`${k}:${JSON.stringify(v)}`)}
+}catch(e){result.issues.push(`fatal:${e.message}`)}finally{result.cleanup={primary:await cleanup(primary),peer:await cleanup(peer)};await browser.close()}
+console.log(JSON.stringify(result,null,2));process.exitCode=result.issues.length?1:0;

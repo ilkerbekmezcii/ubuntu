@@ -5,6 +5,7 @@ on:
     branches: [tiwoo-e2e]
     paths:
       - 'tiwoo-e2e.mjs'
+      - 'tiwoo-interactions.mjs'
       - '.github/workflows/tiwoo-e2e.yml'
   workflow_dispatch:
 
@@ -36,6 +37,10 @@ jobs:
       - name: Audit live Tiwoo
         shell: bash
         run: node tiwoo-e2e.mjs
+
+      - name: Audit Tiwoo interactions
+        shell: bash
+        run: node tiwoo-interactions.mjs
 
       - name: Upload public audit evidence
         if: always()

@@ -31,12 +31,10 @@ jobs:
           p=Path('tiwoo-interactions.mjs'); s=p.read_text()
           marker="await setSession(primary);"
           s=s.replace(marker, marker+" await rpc('privacy',{isPrivate:false});", 1)
-          old="s=bad.length;await page.locator('#followProfile').click();await sleep(1000);result.actions.unfollow="
-          new="s=bad.length;await page.locator('#followProfile').click();await sleep(150);await page.locator('#tiwooConfirmModal .tiwoo-confirm-approve').click();await sleep(850);result.actions.unfollow="
-          s=s.replace(old,new)
-          old2="await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending="
-          new2="await rpc('follow',{target:peerInfo.key});await setSession(peer);const primaryUser=await page.evaluate(username=>(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+String(username).toLowerCase())),primary.username);if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending="
-          s=s.replace(old2,new2)
+          s=s.replace("s=bad.length;await page.locator('#followProfile').click();await sleep(1000);result.actions.unfollow=", "s=bad.length;await page.locator('#followProfile').click();await sleep(150);await page.locator('#tiwooConfirmModal .tiwoo-confirm-approve').click();await sleep(850);result.actions.unfollow=")
+          s=s.replace("await rpc('follow',{target:peerInfo.key});await setSession(peer);let pending=", "await rpc('follow',{target:peerInfo.key});await setSession(peer);const primaryUser=await page.evaluate(username=>(social.directory||[]).find(x=>String(x.handle||'').toLowerCase()===('@'+String(username).toLowerCase())),primary.username);if(primaryUser)await rpc('follow',{target:primaryUser.key});let pending=")
+          s=s.replace("page.locator('#dmText').first(),send=page.locator('#dmSend').first()", "page.locator('#dmText,[data-chat-input]').first(),send=page.locator('#dmSend,[data-chat-send]').first()")
+          s=s.replace("page.once('dialog',d=>d.accept());await del.click();await sleep(1000);", "await del.click();await sleep(150);const delConfirm=page.locator('#tiwooConfirmModal .tiwoo-confirm-approve');if(await delConfirm.isVisible().catch(()=>false))await delConfirm.click();await sleep(850);")
           p.write_text(s)
           PY
       - name: Audit Tiwoo interactions

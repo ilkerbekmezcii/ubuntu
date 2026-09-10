@@ -87,13 +87,12 @@ public final class MainActivity extends Activity {
         if(x.updatedAt>0)b.append("\nSon başarılı veri: ").append(clock(x.updatedAt));
         if(store.syncAttemptAt()>0)b.append(" • Son deneme: ").append(clock(store.syncAttemptAt()));
         String err=store.syncError();if(err!=null&&!err.isEmpty())b.append("\n").append(shortText(err));
-        if("Acquisition".equalsIgnoreCase(source))b.append("\nNet: Earnings erişimi bekleniyor");
         status.setText(b.toString());
     }
 
     private void refreshAsync(){
-        if(refreshing||!credentials.hasCredentials())return;refreshing=true;refresh.setEnabled(false);status.setText("Öncelikli yenileme yapılıyor");
-        exec.execute(()->{try{ReportRepository repo=new ReportRepository(credentials,store);store.markSyncAttempt("Elle Earnings sorgusu");ReportStore.Report rr;try{rr=repo.refresh((d,t,phase)->runOnUiThread(()->status.setText(phase+": "+d+"/"+t)));store.markSyncSuccess("Earnings");}catch(Exception earnings){store.markSyncAttempt("Elle Acquisition fallback");rr=repo.refreshLegacyGross((d,t,phase)->runOnUiThread(()->status.setText(phase+": "+d+"/"+t)));store.markSyncFallback("Acquisition",safe(earnings));}ReportStore.Report finalR=rr;runOnUiThread(()->{render(finalR);finishBusy();});}catch(Exception e){store.markSyncError(safe(e));runOnUiThread(this::finishBusy);}});
+        if(refreshing||!credentials.hasCredentials())return;refreshing=true;refresh.setEnabled(false);status.setText("Öncelikli Earnings yenilemesi yapılıyor");
+        exec.execute(()->{try{ReportRepository repo=new ReportRepository(credentials,store);store.markSyncAttempt("Elle Earnings sorgusu");ReportStore.Report rr=repo.refresh((d,t,phase)->runOnUiThread(()->status.setText(phase+": "+d+"/"+t)));store.markSyncSuccess("Earnings");ReportStore.Report finalR=rr;runOnUiThread(()->{render(finalR);finishBusy();});}catch(Exception e){store.markSyncError(safe(e));runOnUiThread(this::finishBusy);}});
     }
     private void finishBusy(){refreshing=false;refresh.setEnabled(true);render(store.loadReport());renderStatus();}
     private void chooseEnv(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,REQ_ENV);}

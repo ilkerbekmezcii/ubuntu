@@ -30,7 +30,6 @@ jobs:
           echo "Partner Center secrets present"
 
       - name: Request Microsoft access token
-        id: oauth
         shell: bash
         run: |
           set -euo pipefail
@@ -53,12 +52,9 @@ jobs:
             cat "$TOKEN_BODY"
             exit 1
           fi
-          ACCESS_TOKEN=$(python3 - "$TOKEN_BODY" <<'PY'
-import json,sys
-with open(sys.argv[1], encoding='utf-8') as f:
-    print(json.load(f)['access_token'])
-PY
-          )
+          ACCESS_TOKEN=$(jq -r '.access_token' "$TOKEN_BODY")
+          test -n "$ACCESS_TOKEN"
+          test "$ACCESS_TOKEN" != "null"
           echo "::add-mask::$ACCESS_TOKEN"
           printf '%s' "$ACCESS_TOKEN" > "$RUNNER_TEMP/pc_access_token"
 

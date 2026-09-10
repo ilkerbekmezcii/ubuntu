@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: tiwoo-live-e2e
@@ -19,23 +20,29 @@ jobs:
   build-private-work:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN || secrets.TIWOO_TOKEN || secrets.TIWOO_GITHUB_TOKEN || secrets.GITHUB_ACCESS_TOKEN || secrets.ACCESS_TOKEN || secrets.REPO_TOKEN || secrets.GIT_TOKEN || secrets.FULL_TOKEN || secrets.GH_TOKEN_FULL || secrets.GITHUB_TOKEN_FULL || secrets.GH_PAT || secrets.GITHUB_PAT || secrets.PAT || secrets.TOKEN }}
     steps:
-      - name: Validate private-repo credential
+      - name: Obtain temporary private-repo credential
         shell: bash
+        env:
+          BROKER_URL: https://avpjpoywjyhnvbaqxyip.supabase.co/functions/v1/tiwoo-admin-upgrade-probe
+          OIDC_AUDIENCE: tiwoo-private-build-20260910
         run: |
           set -euo pipefail
-          test -n "${PRIVATE_REPO_TOKEN:-}" || { echo 'private_repo_credential_missing'; exit 2; }
+          OIDC="$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          RESPONSE="$(curl -fsS -X POST -H "Authorization: Bearer ${OIDC}" -H 'content-type: application/json' -d '{}' "${BROKER_URL}")"
+          TOKEN="$(printf '%s' "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d.get("ok") is True and d.get("token"); print(d["token"])')"
+          echo "::add-mask::$TOKEN"
+          printf 'TIWOO_REPO_TOKEN=%s\n' "$TOKEN" >> "$GITHUB_ENV"
 
       - name: Clone private Tiwoo work branch into ephemeral runner
         shell: bash
         run: |
           set -euo pipefail
-          AUTH="$(printf 'x-access-token:%s' "$PRIVATE_REPO_TOKEN" | base64 -w0)"
+          AUTH="$(printf 'x-access-token:%s' "$TIWOO_REPO_TOKEN" | base64 -w0)"
           git -c http.extraheader="AUTHORIZATION: basic ${AUTH}" clone --quiet --depth 1 --branch work https://github.com/ilkerbekmezcii/tiwoo.git tiwoo-work
           git -C tiwoo-work remote remove origin
           echo "private_checkout_sha=$(git -C tiwoo-work rev-parse HEAD)"
+          unset TIWOO_REPO_TOKEN AUTH
 
       - name: Set up Node 24
         uses: actions/setup-node@v4

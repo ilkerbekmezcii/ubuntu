@@ -74,7 +74,8 @@ jobs:
             --data-urlencode "\$filter=${FILTER}" \
             --data-urlencode 'fileformat=csv' \
             -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            -H 'Accept: application/json')
+            -H 'Accept: application/json' \
+            -H 'Content-Length: 0')
           HTTP_CODE=$(awk '{print $1}' <<<"$METRICS")
           TIME_TOTAL=$(awk '{print $2}' <<<"$METRICS")
           echo "date=$TODAY"
@@ -84,5 +85,3 @@ jobs:
           cat "$RESPONSE"
           echo
           echo 'earnings_response_end'
-
-      # rerun-marker: 2026-09-11T02:10+03:00

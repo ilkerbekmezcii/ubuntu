@@ -59,7 +59,7 @@ public final class MainActivity extends Activity {
         c=card();c.addView(txt("GÜNLÜK LİDER",11,true,"#6B7280"));dailyLeader=txt("—\nBrüt $0.00   Net —   Adet 0",13,true,"#111827");dailyLeader.setMaxLines(3);c.addView(dailyLeader);r.addView(c);
         c=card();c.addView(txt("AYLIK LİDER",11,true,"#6B7280"));monthlyLeader=txt("—\nBrüt $0.00   Net —   Adet 0",13,true,"#111827");monthlyLeader.setMaxLines(3);c.addView(monthlyLeader);r.addView(c);
 
-        status=txt("Hazır",11,false,"#6B7280");status.setPadding(dp(2),dp(2),dp(2),dp(8));status.setMaxLines(5);r.addView(status);
+        status=txt("Hazır",11,false,"#6B7280");status.setPadding(dp(2),dp(2),dp(2),dp(8));status.setMaxLines(6);r.addView(status);
         refresh=button("Öncelikli yenile");refresh.setOnClickListener(v->refreshAsync());r.addView(refresh,params());
         monitor=button("Satış bildirimi");monitor.setOnClickListener(v->toggleMonitor());LinearLayout.LayoutParams p=params();p.topMargin=dp(6);r.addView(monitor,p);
         Button env=button("microsoft.env seç / değiştir");env.setOnClickListener(v->chooseEnv());p=params();p.topMargin=dp(6);r.addView(env,p);return s;
@@ -87,12 +87,13 @@ public final class MainActivity extends Activity {
         if(x.updatedAt>0)b.append("\nSon başarılı veri: ").append(clock(x.updatedAt));
         if(store.syncAttemptAt()>0)b.append(" • Son deneme: ").append(clock(store.syncAttemptAt()));
         String err=store.syncError();if(err!=null&&!err.isEmpty())b.append("\n").append(shortText(err));
+        if("Store Analytics".equalsIgnoreCase(source))b.append("\nNet: kullanıcı oturumlu Earnings yetkisi gerektiği için gösterilmiyor");
         status.setText(b.toString());
     }
 
     private void refreshAsync(){
-        if(refreshing||!credentials.hasCredentials())return;refreshing=true;refresh.setEnabled(false);status.setText("Öncelikli Earnings yenilemesi yapılıyor");
-        exec.execute(()->{try{ReportRepository repo=new ReportRepository(credentials,store);store.markSyncAttempt("Elle Earnings sorgusu");ReportStore.Report rr=repo.refresh((d,t,phase)->runOnUiThread(()->status.setText(phase+": "+d+"/"+t)));store.markSyncSuccess("Earnings");ReportStore.Report finalR=rr;runOnUiThread(()->{render(finalR);finishBusy();});}catch(Exception e){store.markSyncError(safe(e));runOnUiThread(this::finishBusy);}});
+        if(refreshing||!credentials.hasCredentials())return;refreshing=true;refresh.setEnabled(false);status.setText("Öncelikli Store Analytics yenilemesi yapılıyor");
+        exec.execute(()->{try{ReportRepository repo=new ReportRepository(credentials,store);store.markSyncAttempt("Elle Store Analytics sorgusu");ReportStore.Report rr=repo.refresh((d,t,phase)->runOnUiThread(()->status.setText(phase+": "+d+"/"+t)));store.markSyncSuccess("Store Analytics");ReportStore.Report finalR=rr;runOnUiThread(()->{render(finalR);finishBusy();});}catch(Exception e){store.markSyncError(safe(e));runOnUiThread(this::finishBusy);}});
     }
     private void finishBusy(){refreshing=false;refresh.setEnabled(true);render(store.loadReport());renderStatus();}
     private void chooseEnv(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,REQ_ENV);}

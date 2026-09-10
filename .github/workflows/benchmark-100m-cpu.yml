@@ -1,0 +1,45 @@
+name: 100M CPU Benchmark
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/benchmark-100m-cpu.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CPU PyTorch
+        run: python3 -m pip install --disable-pip-version-check --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+      - name: Benchmark sequence and dtype
+        run: |
+          python3 - <<'PY'
+          import os,time,json,torch
+          from train100m import Model,VOCAB
+          torch.set_num_threads(max(1,os.cpu_count() or 1))
+          print(json.dumps({'cpus':os.cpu_count(),'threads':torch.get_num_threads(),'mkldnn':torch.backends.mkldnn.enabled,'bf16_supported':getattr(torch.backends.cpu,'get_cpu_capability',lambda:'unknown')()}))
+          def run(seq,dtype):
+              torch.manual_seed(1)
+              m=Model().train()
+              opt=torch.optim.AdamW(m.parameters(),lr=1e-4,foreach=True)
+              x=torch.randint(0,VOCAB,(1,seq)); y=torch.randint(0,VOCAB,(1,seq))
+              def step():
+                  opt.zero_grad(set_to_none=True)
+                  if dtype=='bf16':
+                      with torch.autocast('cpu',dtype=torch.bfloat16):
+                          z=m(x); loss=torch.nn.functional.cross_entropy(z.reshape(-1,VOCAB),y.reshape(-1))
+                  else:
+                      z=m(x); loss=torch.nn.functional.cross_entropy(z.reshape(-1,VOCAB),y.reshape(-1))
+                  loss.backward(); opt.step(); return float(loss)
+              step()
+              t=time.perf_counter(); loss=step(); dt=time.perf_counter()-t
+              print(json.dumps({'seq':seq,'dtype':dtype,'seconds':dt,'tokens_per_s':seq/dt,'loss':loss}),flush=True)
+              del m,opt,x,y
+          for dtype,seqs in [('fp32',[128,256,512]),('bf16',[128,256,512])]:
+              for seq in seqs:
+                  try: run(seq,dtype)
+                  except Exception as e: print(json.dumps({'seq':seq,'dtype':dtype,'error':repr(e)}),flush=True)
+          PY

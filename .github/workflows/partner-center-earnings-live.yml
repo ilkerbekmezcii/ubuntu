@@ -1,4 +1,4 @@
-name: Partner Center Earnings Live Test
+name: Partner Center Graph Permission Setup
 
 on:
   push:
@@ -11,77 +11,51 @@ permissions:
   contents: read
 
 jobs:
-  earnings:
+  setup:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      TZ: Europe/Istanbul
       PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
       PARTNER_CENTER_CLIENT_SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
       PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
     steps:
-      - name: Validate secret presence
+      - name: Diagnose Microsoft Graph permissions
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$PARTNER_CENTER_CLIENT_ID"
-          test -n "$PARTNER_CENTER_CLIENT_SECRET"
-          test -n "$PARTNER_CENTER_TENANT_ID"
-          echo "Partner Center secrets present"
-
-      - name: Request Microsoft access token
-        shell: bash
-        run: |
-          set -euo pipefail
-          TOKEN_BODY=$(mktemp)
-          METRICS=$(curl -sS \
-            -o "$TOKEN_BODY" \
-            -w '%{http_code} %{time_total}' \
+          BODY=$(mktemp)
+          CODE=$(curl -sS -o "$BODY" -w '%{http_code}' \
             -X POST "https://login.microsoftonline.com/${PARTNER_CENTER_TENANT_ID}/oauth2/v2.0/token" \
             -H 'Content-Type: application/x-www-form-urlencoded' \
             --data-urlencode 'grant_type=client_credentials' \
             --data-urlencode "client_id=${PARTNER_CENTER_CLIENT_ID}" \
             --data-urlencode "client_secret=${PARTNER_CENTER_CLIENT_SECRET}" \
-            --data-urlencode 'scope=https://api.partner.microsoft.com/.default')
-          HTTP_CODE=$(awk '{print $1}' <<<"$METRICS")
-          TIME_TOTAL=$(awk '{print $2}' <<<"$METRICS")
-          echo "oauth_http_status=$HTTP_CODE"
-          echo "oauth_seconds=$TIME_TOTAL"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo 'OAuth response:'
-            cat "$TOKEN_BODY"
-            exit 1
-          fi
-          ACCESS_TOKEN=$(jq -r '.access_token' "$TOKEN_BODY")
-          test -n "$ACCESS_TOKEN"
-          test "$ACCESS_TOKEN" != "null"
-          echo "::add-mask::$ACCESS_TOKEN"
-          printf '%s' "$ACCESS_TOKEN" > "$RUNNER_TEMP/pc_access_token"
+            --data-urlencode 'scope=https://graph.microsoft.com/.default')
+          echo "graph_oauth_http_status=$CODE"
+          test "$CODE" = "200"
+          TOKEN=$(jq -r '.access_token' "$BODY")
+          echo "::add-mask::$TOKEN"
+          PAYLOAD=$(printf '%s' "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{l=length($0)%4;if(l==2)$0=$0"==";else if(l==3)$0=$0"=";print}' | base64 -d 2>/dev/null || true)
+          echo "graph_token_roles=$(printf '%s' "$PAYLOAD" | jq -c '.roles // []')"
 
-      - name: Call Earnings API for today
-        shell: bash
-        run: |
-          set -euo pipefail
-          ACCESS_TOKEN=$(cat "$RUNNER_TEMP/pc_access_token")
-          TODAY=$(TZ=Europe/Istanbul date +%F)
-          FILTER="earningForDate ge ${TODAY} and earningForDate le ${TODAY}"
-          RESPONSE=$(mktemp)
-          METRICS=$(curl -sS \
-            -o "$RESPONSE" \
-            -w '%{http_code} %{time_total}' \
-            -X POST \
-            -G 'https://api.partner.microsoft.com/v1.0/payouts/transactionhistory' \
-            --data-urlencode "\$filter=${FILTER}" \
-            --data-urlencode 'fileformat=csv' \
-            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            -H 'Accept: application/json' \
-            -H 'Content-Length: 0')
-          HTTP_CODE=$(awk '{print $1}' <<<"$METRICS")
-          TIME_TOTAL=$(awk '{print $2}' <<<"$METRICS")
-          echo "date=$TODAY"
-          echo "earnings_http_status=$HTTP_CODE"
-          echo "earnings_seconds=$TIME_TOTAL"
-          echo 'earnings_response_begin'
-          cat "$RESPONSE"
-          echo
-          echo 'earnings_response_end'
+          APPRESP=$(mktemp)
+          APPCODE=$(curl -sS -o "$APPRESP" -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            "https://graph.microsoft.com/v1.0/applications?%24filter=appId%20eq%20'${PARTNER_CENTER_CLIENT_ID}'&%24select=id,appId,displayName,requiredResourceAccess")
+          echo "graph_get_application_status=$APPCODE"
+          if [ "$APPCODE" = "200" ]; then
+            jq '{value:[.value[]|{id,appId,displayName,requiredResourceAccess}]}' "$APPRESP"
+          else
+            jq -c '{error:.error.code,message:.error.message}' "$APPRESP" 2>/dev/null || cat "$APPRESP"
+          fi
+
+          SPRESP=$(mktemp)
+          SPCODE=$(curl -sS -o "$SPRESP" -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            "https://graph.microsoft.com/v1.0/servicePrincipals?%24filter=appId%20eq%20'4990cffe-04e8-4e8b-808a-1175604b879f'&%24select=id,appId,displayName,oauth2PermissionScopes")
+          echo "graph_get_devcenter_sp_status=$SPCODE"
+          if [ "$SPCODE" = "200" ]; then
+            jq '{value:[.value[]|{id,appId,displayName,oauth2PermissionScopes:[.oauth2PermissionScopes[]|select(.value=="user_impersonation")|{id,value,type,isEnabled}]}]}' "$SPRESP"
+          else
+            jq -c '{error:.error.code,message:.error.message}' "$SPRESP" 2>/dev/null || cat "$SPRESP"
+          fi

@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -d .github ]; then mv .github "$RUNNER_TEMP/tiwoo-private-github-metadata"; fi
-          npm ci
+          npm install --no-package-lock --no-audit --no-fund
           npm run build
 
   audit:

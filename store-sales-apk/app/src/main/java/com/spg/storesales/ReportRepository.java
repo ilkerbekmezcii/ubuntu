@@ -11,20 +11,23 @@ import java.util.Map;
 public final class ReportRepository {
     public interface Progress { void onProgress(int done,int total,String phase); }
     private static final long APP_CACHE_MS=12L*60L*60L*1000L;
-    private static final long FULL_VERIFY_MS=24L*60L*60L*1000L;
+    private static final long FULL_VERIFY_MS=6L*60L*60L*1000L;
+    private static final String CACHE_SCHEMA="txn-v1";
     private static final Object REFRESH_LOCK=new Object();
     private final CredentialStore credentials;
     private final ReportStore store;
 
     public ReportRepository(CredentialStore credentials,ReportStore store){this.credentials=credentials;this.store=store;}
 
+    private static String currentMonthKey(){Calendar c=Calendar.getInstance();return c.get(Calendar.YEAR)+"-"+(c.get(Calendar.MONTH)+1)+":"+CACHE_SCHEMA;}
+
     public boolean needsFullSync(){
-        Calendar c=Calendar.getInstance();String monthKey=c.get(Calendar.YEAR)+"-"+(c.get(Calendar.MONTH)+1);
+        String monthKey=currentMonthKey();
         return !monthKey.equals(store.monthKey())||store.appMonthValues().length()==0||System.currentTimeMillis()-store.fullSyncAt()>=FULL_VERIFY_MS;
     }
 
     public ReportStore.Report refresh(Progress progress) throws Exception {
-        synchronized(REFRESH_LOCK){Calendar c=Calendar.getInstance();String monthKey=c.get(Calendar.YEAR)+"-"+(c.get(Calendar.MONTH)+1);return needsFullSync()?fullEarnings(monthKey,progress):fastEarnings(progress);}
+        synchronized(REFRESH_LOCK){String monthKey=currentMonthKey();return needsFullSync()?fullEarnings(monthKey,progress):fastEarnings(progress);}
     }
 
     public ReportStore.Report refreshLegacyGross(Progress progress) throws Exception {

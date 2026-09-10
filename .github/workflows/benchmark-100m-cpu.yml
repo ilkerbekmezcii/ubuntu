@@ -12,15 +12,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install CPU PyTorch
-        run: python3 -m pip install --disable-pip-version-check --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+      - name: Install CPU dependencies
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet numpy==2.2.6 sentencepiece==0.2.1
+          python3 -m pip install --disable-pip-version-check --quiet torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
       - name: Benchmark sequence and dtype
         run: |
           python3 - <<'PY'
           import os,time,json,torch
           from train100m import Model,VOCAB
           torch.set_num_threads(max(1,os.cpu_count() or 1))
-          print(json.dumps({'cpus':os.cpu_count(),'threads':torch.get_num_threads(),'mkldnn':torch.backends.mkldnn.enabled,'bf16_supported':getattr(torch.backends.cpu,'get_cpu_capability',lambda:'unknown')()}))
+          print(json.dumps({'cpus':os.cpu_count(),'threads':torch.get_num_threads(),'mkldnn':torch.backends.mkldnn.enabled,'cpu_capability':getattr(torch.backends.cpu,'get_cpu_capability',lambda:'unknown')()}))
           def run(seq,dtype):
               torch.manual_seed(1)
               m=Model().train()

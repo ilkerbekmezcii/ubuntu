@@ -1,6 +1,10 @@
 name: Partner Center Earnings Live Test
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/partner-center-earnings-live.yml'
   workflow_dispatch:
 
 permissions:

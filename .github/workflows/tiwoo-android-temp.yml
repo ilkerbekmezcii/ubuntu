@@ -78,7 +78,6 @@ jobs:
           failed=[k for k,v in required.items() if not v]
           print('guard_checks=',required)
           if failed: raise SystemExit('failed: '+', '.join(failed))
-          # Equivalent behavioral truth-table for the exact native prefix algorithm.
           def blocked(aliases,key,typ):
               if typ.lower()!='message' or key is None or not aliases: return False
               n=key.strip().lower()
@@ -126,10 +125,22 @@ jobs:
           echo "APK_BYTES=$(stat -c%s "$APK")"
           echo "AAB_BYTES=$(stat -c%s "$AAB")"
           sha256sum "$APK" "$AAB" | sed 's#/tmp/tiwoo-android/##'
-          if jarsigner -verify "$AAB" >/dev/null 2>&1; then echo 'AAB_SIGNED=true'; else echo 'AAB_SIGNED=false'; fi
+          SIGN_LOG=/tmp/aab-sign.log
+          jarsigner -verify -verbose -certs "$AAB" >"$SIGN_LOG" 2>&1 || true
+          if grep -qi 'jar is unsigned' "$SIGN_LOG"; then
+            echo 'AAB_SIGNED=false'
+          elif grep -qi 'jar verified' "$SIGN_LOG"; then
+            echo 'AAB_SIGNED=true'
+            keytool -printcert -jarfile "$AAB" 2>/dev/null | grep -E 'SHA1:|SHA256:' || true
+          else
+            echo 'AAB_SIGNED=unknown'
+            tail -n 20 "$SIGN_LOG"
+            exit 1
+          fi
+          rm -f "$SIGN_LOG"
 
       - name: Cleanup runner temp
         if: always()
         shell: bash
         run: |
-          rm -rf /tmp/tiwoo-android /tmp/tiwoo-source.json
+          rm -rf /tmp/tiwoo-android /tmp/tiwoo-source.json /tmp/aab-sign.log

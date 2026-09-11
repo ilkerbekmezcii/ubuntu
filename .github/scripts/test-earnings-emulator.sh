@@ -22,7 +22,7 @@ grep -Fq 'Microsoft Earnings' "$OUT/window-initial.xml"
 grep -Fq 'Bugün' "$OUT/window-initial.xml"
 grep -Fq 'Bu Ay' "$OUT/window-initial.xml"
 grep -Fq 'ENV DOSYASI' "$OUT/window-initial.xml"
-grep -Fq 'MFA' "$OUT/window-initial.xml"
+grep -Fq 'MICROSOFT İLE GİRİŞ' "$OUT/window-initial.xml"
 
 printf 'TENANT_ID=00000000-0000-0000-0000-000000000000\nCLIENT_ID=11111111-1111-1111-1111-111111111111\n' > "$OUT/test.env"
 adb push "$OUT/test.env" /sdcard/Download/test.env >/dev/null
@@ -73,13 +73,13 @@ def resumed_package():
     text=adb_text('shell','dumpsys','activity','activities')
     for line in text.splitlines():
         if 'mResumedActivity' in line or 'topResumedActivity' in line:
-            if PKG in line: return PKG
-            if DOCS in line: return DOCS
+            m=re.search(r' ([A-Za-z0-9_.]+)/',line)
+            if m:return m.group(1)
     return ''
 
-def returned_to_app():
+def returned_from_picker():
     time.sleep(0.8)
-    return resumed_package()==PKG
+    return resumed_package()!=DOCS
 
 root=ET.parse('emulator-test/window-initial.xml').getroot()
 btn=find(root,'.env dosyasi sec')
@@ -118,8 +118,6 @@ while row is not None and row.attrib.get('resource-id')!='com.android.documentsu
 if row is None:
     raise RuntimeError('test.env item row not found')
 
-# DocumentsUI behavior differs between emulator/API versions. Try the visible title,
-# file icon, and row body first; none of these touch the preview button at the right.
 fx1,fy1,fx2,fy2=bounds(file_node)
 rx1,ry1,rx2,ry2=bounds(row)
 candidates=[
@@ -128,41 +126,31 @@ candidates=[
     (max(rx1+220,1),(ry1+ry2)//2),
 ]
 for x,y in candidates:
-    print(f'Trying document tap at {x},{y}')
     adb('shell','input','tap',str(x),str(y))
-    if returned_to_app():
-        print('Document returned to app by touch')
+    if returned_from_picker():
+        print('Document picker returned by touch')
         break
 else:
-    # Keyboard/accessibility fallback. item_root is focusable even when DocumentsUI
-    # reports clickable=false. TAB until that row owns focus, then ENTER.
     for i in range(20):
-        adb('shell','input','keyevent','61')  # KEYCODE_TAB
+        adb('shell','input','keyevent','61')
         time.sleep(0.15)
         focused=dump('/sdcard/focus.xml','emulator-test/focus.xml')
         focused_nodes=[n for n in focused.iter('node') if n.attrib.get('focused')=='true']
         hit=False
         for n in focused_nodes:
-            if n.attrib.get('resource-id')=='com.android.documentsui:id/item_root':
-                if any(c.attrib.get('text')=='test.env' for c in n.iter('node')):
-                    hit=True
-                    break
+            if n.attrib.get('resource-id')=='com.android.documentsui:id/item_root' and any(c.attrib.get('text')=='test.env' for c in n.iter('node')):
+                hit=True
+                break
         if hit:
-            print(f'test.env row focused after {i+1} TAB presses; pressing ENTER')
-            adb('shell','input','keyevent','66')  # KEYCODE_ENTER
-            if returned_to_app():
-                print('Document returned to app by keyboard')
+            adb('shell','input','keyevent','66')
+            if returned_from_picker():
+                print('Document picker returned by keyboard')
                 break
     else:
-        # Last fallback for headless emulator keyboard navigation: move into the list
-        # and activate the current row.
         adb('shell','input','keyevent','20')
         adb('shell','input','keyevent','66')
-        if not returned_to_app():
-            raise RuntimeError('DocumentsUI did not return test.env to the app')
-
-if resumed_package()!=PKG:
-    raise RuntimeError('App did not resume after selecting test.env')
+        if not returned_from_picker():
+            raise RuntimeError('DocumentsUI did not return test.env')
 PY
 
 FOUND=0
@@ -173,41 +161,39 @@ for _ in $(seq 1 40); do
   fi
   sleep 0.5
 done
-
-adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' > "$OUT/focus-after-select.txt" || true
-adb shell uiautomator dump /sdcard/window-after-select.xml >/dev/null || true
-adb pull /sdcard/window-after-select.xml "$OUT/window-after-select.xml" >/dev/null || true
-adb exec-out screencap -p > "$OUT/after-select.png" || true
-adb exec-out run-as "$PKG" pwd > "$OUT/app-pwd.txt"
-adb exec-out run-as "$PKG" ls -la > "$OUT/app-files.txt" || true
-adb exec-out run-as "$PKG" ls -la shared_prefs > "$OUT/shared-prefs-list.txt" || true
-
 if [ "$FOUND" -ne 1 ]; then
   echo 'Encrypted auth_store.xml was not created after selecting .env'
   exit 1
 fi
 
+# Give PKCE generation/browser launch time to complete.
+sleep 3
+adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' > "$OUT/focus-after-login-launch.txt" || true
 adb exec-out run-as "$PKG" cat shared_prefs/auth_store.xml > "$OUT/auth_store.xml"
 grep -Fq 'name="tenant_id"' "$OUT/auth_store.xml"
 grep -Fq 'name="client_id"' "$OUT/auth_store.xml"
+grep -Fq 'name="oauth_pkce_verifier"' "$OUT/auth_store.xml"
+grep -Fq 'name="oauth_state"' "$OUT/auth_store.xml"
 if grep -Fq '00000000-0000-0000-0000-000000000000' "$OUT/auth_store.xml" || grep -Fq '11111111-1111-1111-1111-111111111111' "$OUT/auth_store.xml"; then
   echo 'OAuth identifiers were stored in plaintext'
   exit 1
 fi
 
-adb shell am force-stop "$PKG" || true
-adb shell am start -W -n "$PKG/$ACT" >/dev/null
+# Verify Android routes the OAuth callback back to MainActivity. An error callback avoids
+# requiring a real Microsoft account/token in public CI while exercising the deep link.
+adb shell am start -W -a android.intent.action.VIEW -d 'com.ilker.microsoftreport://oauth2redirect?error=access_denied&error_description=smoke-test' >/dev/null
 sleep 2
-adb shell uiautomator dump /sdcard/window-after-env.xml >/dev/null
-adb pull /sdcard/window-after-env.xml "$OUT/window-after-env.xml" >/dev/null
-adb exec-out screencap -p > "$OUT/after-env.png"
-adb logcat -d > "$OUT/logcat.txt"
+adb shell uiautomator dump /sdcard/window-callback.xml >/dev/null
+adb pull /sdcard/window-callback.xml "$OUT/window-callback.xml" >/dev/null
+adb exec-out screencap -p > "$OUT/after-callback.png"
+grep -Fq 'Microsoft giriş hatası: smoke-test' "$OUT/window-callback.xml"
 
+adb logcat -d > "$OUT/logcat.txt"
 if grep -Fq 'FATAL EXCEPTION' "$OUT/logcat.txt"; then
   echo 'App crash detected'
   tail -n 250 "$OUT/logcat.txt"
   exit 1
 fi
 
-grep -Fq 'Microsoft Earnings' "$OUT/window-after-env.xml"
+grep -Fq 'Microsoft Earnings' "$OUT/window-callback.xml"
 echo 'EMULATOR_SMOKE_TEST_OK'

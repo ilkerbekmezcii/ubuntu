@@ -1,0 +1,57 @@
+name: Play Environment Presence Probe
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+jobs:
+  probe:
+    if: github.event.issue.user.login == 'ilkerbekmezcii' && github.event.issue.title == '[PLAY ENV PROBE]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe Play credential presence through OIDC
+        id: probe
+        shell: bash
+        env:
+          PROBE_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/play-env-presence-v1
+          PROBE_AUD: play-env-presence-v1
+        run: |
+          set -euo pipefail
+          TOKEN="$(python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=' + urllib.parse.quote(os.environ['PROBE_AUD'])
+          req = urllib.request.Request(url, headers={'Authorization': 'bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              print(json.load(response)['value'])
+          PY
+          )"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "${PROBE_URL}" -o /tmp/play-env.json
+          python3 - <<'PY'
+          import json, os
+          data=json.load(open('/tmp/play-env.json', encoding='utf-8'))
+          summary=json.dumps(data, sort_keys=True, separators=(',', ':'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+              f.write('summary=' + summary + '\n')
+          PY
+          rm -f /tmp/play-env.json
+
+      - name: Report non-sensitive presence result
+        uses: actions/github-script@v7
+        env:
+          SUMMARY: ${{ steps.probe.outputs.summary }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `PLAY_ENV_PRESENCE=${process.env.SUMMARY}`
+            });

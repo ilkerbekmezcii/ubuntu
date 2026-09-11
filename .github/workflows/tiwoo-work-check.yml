@@ -1,6 +1,6 @@
 name: Tiwoo Work Checker
 
-# Temporary white admin theme validation
+# Triggered for Tiwoo work validation: 2026-09-11 run 2
 on:
   push:
     branches: [main]
@@ -23,8 +23,8 @@ jobs:
       - name: Fetch private checker payload to ephemeral disk
         shell: bash
         env:
-          PAYLOAD_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-admin-theme-check-payload-20260912
-          PAYLOAD_AUD: tiwoo-admin-theme-check-v1
+          PAYLOAD_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-work-check-payload
+          PAYLOAD_AUD: tiwoo-work-check-v1
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -48,9 +48,9 @@ jobs:
           print('PAYLOAD_FILES='+str(len(files)))
           PY
 
-      - name: Validate white admin theme
+      - name: Run legacy handle boundary regression check
         working-directory: /tmp/tiwoo-work-check
-        run: node scripts/admin-theme-check.mjs
+        run: node scripts/legacy-handle-boundary-check.mjs
 
       - name: Remove private payload from runner
         if: always()

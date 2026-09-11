@@ -1,0 +1,55 @@
+name: Tiwoo App Wait Temp
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tiwoo-app-wait-temp.yml']
+permissions:
+  contents: read
+jobs:
+  wait-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Playwright
+        run: |
+          cd /tmp
+          npm init -y >/dev/null
+          npm install playwright@1.55.0 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+      - name: Measure live startup
+        working-directory: /tmp
+        run: |
+          cat > wait.mjs <<'EOF'
+          import {chromium} from 'playwright';
+          import {randomUUID} from 'node:crypto';
+          const base='https://tiwoo.vercel.app';
+          const browser=await chromium.launch({headless:true});
+          const context=await browser.newContext({viewport:{width:1440,height:1000}});
+          const page=await context.newPage();
+          const username=`wait_${Date.now().toString(36).slice(-8)}`;
+          const password=`T!${randomUUID().replaceAll('-','').slice(0,20)}a9`;
+          let token='';
+          try{
+            await page.goto(base,{waitUntil:'domcontentloaded',timeout:30000});
+            const reg=await page.request.post(`${base}/api/tiwoo-auth`,{data:{action:'register',username,password,name:'Tiwoo Wait'}});
+            const p=await reg.json();token=p.session.accessToken;
+            await page.evaluate(async s=>window.TiwooSupabase.sb.auth.setSession({access_token:s.a,refresh_token:s.r}),{a:p.session.accessToken,r:p.session.refreshToken});
+            await page.reload({waitUntil:'domcontentloaded',timeout:30000});
+            const samples=[];
+            for(const ms of [1000,2500,5000,8000,11000]){
+              const already=samples.length?samples[samples.length-1].at:0;await page.waitForTimeout(ms-already);
+              samples.push({at:ms,app:await page.locator('#app:not(.hidden)').count(),landing:await page.locator('#publicLanding:not(.hidden)').count(),composer:await page.locator('#inlineText').count()});
+            }
+            console.log('TIWOO_WAIT='+JSON.stringify(samples));
+          } finally {
+            if(token)await page.request.post(`${base}/api/tiwoo-auth`,{headers:{authorization:`Bearer ${token}`},data:{action:'account_delete',confirmation:username,acknowledged:true}}).catch(()=>{});
+            await context.close();await browser.close();
+          }
+          EOF
+          node wait.mjs
+      - name: Cleanup
+        if: always()
+        run: rm -f /tmp/wait.mjs

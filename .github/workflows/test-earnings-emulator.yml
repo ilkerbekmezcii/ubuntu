@@ -49,7 +49,7 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             APK=android-earnings/app/build/outputs/apk/debug/app-debug.apk
             PKG=com.ilker.microsoftreport
             ACT=.MainActivity
@@ -66,91 +66,74 @@ jobs:
             adb pull /sdcard/window.xml emulator-test/window-initial.xml >/dev/null
             adb exec-out screencap -p > emulator-test/initial.png
 
-            grep -q 'Microsoft Earnings' emulator-test/window-initial.xml
-            grep -q 'Bugün' emulator-test/window-initial.xml
-            grep -q 'Bu Ay' emulator-test/window-initial.xml
-            grep -q '.env dosyası seç' emulator-test/window-initial.xml
-            grep -q 'Microsoft ile giriş / MFA' emulator-test/window-initial.xml
+            grep -Fq 'Microsoft Earnings' emulator-test/window-initial.xml
+            grep -Fq 'Bugün' emulator-test/window-initial.xml
+            grep -Fq 'Bu Ay' emulator-test/window-initial.xml
+            grep -Fq '.env dosyası seç' emulator-test/window-initial.xml
+            grep -Fq 'Microsoft ile giriş / MFA' emulator-test/window-initial.xml
 
             printf 'TENANT_ID=test-tenant\nCLIENT_ID=test-client\n' > emulator-test/test.env
             adb push emulator-test/test.env /sdcard/Download/test.env >/dev/null
 
             python3 - <<'PY'
-            import re, subprocess, xml.etree.ElementTree as ET
-            root=ET.parse('emulator-test/window-initial.xml').getroot()
-            for n in root.iter('node'):
-                if n.attrib.get('text') == '.env dosyası seç':
-                    m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', n.attrib['bounds'])
-                    x=(int(m.group(1))+int(m.group(3)))//2
-                    y=(int(m.group(2))+int(m.group(4)))//2
-                    subprocess.check_call(['adb','shell','input','tap',str(x),str(y)])
-                    break
-            else:
-                raise SystemExit('ENV button not found')
-            PY
-            sleep 2
+            import re, subprocess, time, xml.etree.ElementTree as ET
 
-            adb shell uiautomator dump /sdcard/picker.xml >/dev/null
-            adb pull /sdcard/picker.xml emulator-test/picker.xml >/dev/null
-            adb exec-out screencap -p > emulator-test/picker.png
+            def adb(*args):
+                subprocess.check_call(['adb', *args])
 
-            python3 - <<'PY'
-            import re, subprocess, xml.etree.ElementTree as ET
-            root=ET.parse('emulator-test/picker.xml').getroot()
-            candidates=[]
-            for n in root.iter('node'):
-                txt=n.attrib.get('text','')
-                desc=n.attrib.get('content-desc','')
-                if 'test.env' in txt or 'test.env' in desc:
-                    candidates.append(n)
-            if not candidates:
-                # Open Downloads if the picker starts at Recents and the file is not visible.
+            def dump(remote, local):
+                adb('shell','uiautomator','dump',remote)
+                adb('pull',remote,local)
+                return ET.parse(local).getroot()
+
+            def tap_node(node):
+                m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', node.attrib.get('bounds',''))
+                if not m:
+                    raise RuntimeError('node has no usable bounds')
+                x=(int(m.group(1))+int(m.group(3)))//2
+                y=(int(m.group(2))+int(m.group(4)))//2
+                adb('shell','input','tap',str(x),str(y))
+
+            def find(root, text, contains=False):
                 for n in root.iter('node'):
-                    if n.attrib.get('text') == 'Downloads':
-                        m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', n.attrib['bounds'])
-                        x=(int(m.group(1))+int(m.group(3)))//2; y=(int(m.group(2))+int(m.group(4)))//2
-                        subprocess.check_call(['adb','shell','input','tap',str(x),str(y)])
-                        raise SystemExit(42)
-                raise SystemExit('test.env not visible in picker')
-            n=candidates[0]
-            m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', n.attrib['bounds'])
-            x=(int(m.group(1))+int(m.group(3)))//2; y=(int(m.group(2))+int(m.group(4)))//2
-            subprocess.check_call(['adb','shell','input','tap',str(x),str(y)])
-            PY
-            rc=$?
-            if [ "$rc" = 42 ]; then
-              sleep 1
-              adb shell uiautomator dump /sdcard/picker2.xml >/dev/null
-              adb pull /sdcard/picker2.xml emulator-test/picker2.xml >/dev/null
-              python3 - <<'PY'
-            import re, subprocess, xml.etree.ElementTree as ET
-            root=ET.parse('emulator-test/picker2.xml').getroot()
-            for n in root.iter('node'):
-                if 'test.env' in n.attrib.get('text','') or 'test.env' in n.attrib.get('content-desc',''):
-                    m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', n.attrib['bounds'])
-                    x=(int(m.group(1))+int(m.group(3)))//2; y=(int(m.group(2))+int(m.group(4)))//2
-                    subprocess.check_call(['adb','shell','input','tap',str(x),str(y)])
-                    break
-            else:
-                raise SystemExit('test.env not found in Downloads')
-            PY
-            fi
+                    values=(n.attrib.get('text',''), n.attrib.get('content-desc',''))
+                    if any((text in v if contains else text == v) for v in values):
+                        return n
+                return None
 
-            sleep 4
-            adb shell uiautomator dump /sdcard/window-after-env.xml >/dev/null || true
-            adb pull /sdcard/window-after-env.xml emulator-test/window-after-env.xml >/dev/null || true
-            adb exec-out screencap -p > emulator-test/after-env.png || true
+            root=ET.parse('emulator-test/window-initial.xml').getroot()
+            btn=find(root,'.env dosyası seç')
+            if btn is None:
+                raise RuntimeError('ENV button not found')
+            tap_node(btn)
+            time.sleep(2)
+
+            root=dump('/sdcard/picker.xml','emulator-test/picker.xml')
+            file_node=find(root,'test.env',contains=True)
+            if file_node is None:
+                downloads=find(root,'Downloads')
+                if downloads is None:
+                    raise RuntimeError('Downloads entry not found in picker')
+                tap_node(downloads)
+                time.sleep(2)
+                root=dump('/sdcard/picker2.xml','emulator-test/picker2.xml')
+                file_node=find(root,'test.env',contains=True)
+            if file_node is None:
+                raise RuntimeError('test.env not found in picker')
+            tap_node(file_node)
+            PY
+
+            sleep 5
+            adb shell uiautomator dump /sdcard/window-after-env.xml >/dev/null
+            adb pull /sdcard/window-after-env.xml emulator-test/window-after-env.xml >/dev/null
+            adb exec-out screencap -p > emulator-test/after-env.png
             adb logcat -d > emulator-test/logcat.txt
 
-            if grep -q 'FATAL EXCEPTION' emulator-test/logcat.txt; then
+            grep -Fq '.env yüklendi' emulator-test/window-after-env.xml
+
+            if grep -Fq 'FATAL EXCEPTION' emulator-test/logcat.txt; then
               echo 'App crash detected'
               tail -n 250 emulator-test/logcat.txt
-              exit 1
-            fi
-
-            # Successful import must advance beyond the initial "Önce .env dosyasını seçin." state.
-            if grep -q 'Önce .env dosyasını seçin.' emulator-test/window-after-env.xml; then
-              echo '.env import did not advance setup state'
               exit 1
             fi
 

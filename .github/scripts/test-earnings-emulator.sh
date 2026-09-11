@@ -22,7 +22,7 @@ grep -Fq 'Microsoft Earnings' "$OUT/window-initial.xml"
 grep -Fq 'Bugün' "$OUT/window-initial.xml"
 grep -Fq 'Bu Ay' "$OUT/window-initial.xml"
 grep -Fq 'ENV DOSYASI' "$OUT/window-initial.xml"
-grep -Fq 'MICROSOFT İLE GİRİŞ' "$OUT/window-initial.xml"
+grep -Fq 'MICROSOFT ILE GIRI' "$OUT/window-initial.xml"
 
 printf 'TENANT_ID=00000000-0000-0000-0000-000000000000\nCLIENT_ID=11111111-1111-1111-1111-111111111111\n' > "$OUT/test.env"
 adb push "$OUT/test.env" /sdcard/Download/test.env >/dev/null

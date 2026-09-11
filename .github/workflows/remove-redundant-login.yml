@@ -1,0 +1,34 @@
+name: Remove redundant APK build login
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/remove-redundant-login.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove interactive setup step
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('.github/workflows/partner-center-earnings-live.yml')
+          s = p.read_text()
+          a = s.index('      - name: Enable public client flow')
+          b = s.index('      - name: Generate Android project')
+          p.write_text(s[:a] + s[b:])
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/partner-center-earnings-live.yml
+          git commit -m 'Build APK without repeated device login'
+          git push

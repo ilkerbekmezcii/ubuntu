@@ -72,17 +72,23 @@ jobs:
           print('frontend_cleanup_audit=ok')
           PY
 
-      - name: Smoke-test public Tiwoo and retired endpoint protection
+      - name: Smoke-test production and cleaned AI endpoints
         shell: bash
         run: |
           set -euo pipefail
+          base='https://avpjpoywjyhnvbaqxyip.supabase.co/functions/v1'
           test "$(curl -L -sS -o /tmp/tiwoo-home -w '%{http_code}' https://tiwoo.vercel.app/)" = "200"
-          code="$(curl -sS -o /tmp/retired -w '%{http_code}' https://avpjpoywjyhnvbaqxyip.supabase.co/functions/v1/tiwoo-admin-auth-check)"
-          test "$code" = "401" -o "$code" = "410"
-          echo "production_home=200 retired_endpoint=$code"
+          retired="$(curl -sS -o /tmp/retired -w '%{http_code}' "$base/tiwoo-admin-auth-check")"
+          test "$retired" = "401" -o "$retired" = "410"
+          for fn in tiwoo-ai-publisher tiwoo-ai-dm tiwoo-ai-mention tiwoo-ai-mention-worktest tiwoo-ai-dispatch tiwoo-push-dispatch; do
+            code="$(curl -sS -X POST -H 'content-type: application/json' -d '{}' -o "/tmp/$fn" -w '%{http_code}' "$base/$fn")"
+            test "$code" = "401" -o "$code" = "403"
+            echo "$fn unauthenticated=$code"
+          done
+          echo "production_home=200 retired_endpoint=$retired"
 
       - name: Remove private payload from runner
         if: always()
         run: |
-          rm -rf /tmp/tiwoo-cleanup /tmp/tiwoo-home /tmp/retired
+          rm -rf /tmp/tiwoo-cleanup /tmp/tiwoo-home /tmp/retired /tmp/tiwoo-ai-* /tmp/tiwoo-push-dispatch
           test ! -e /tmp/tiwoo-cleanup

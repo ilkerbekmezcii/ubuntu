@@ -1,0 +1,58 @@
+name: Tiwoo Work Checker
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tiwoo-work-check.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch private checker payload to ephemeral disk
+        shell: bash
+        env:
+          PAYLOAD_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-work-check-payload
+          PAYLOAD_AUD: tiwoo-work-check-v1
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.parse, urllib.request
+          base=os.environ['PAYLOAD_URL']
+          aud=os.environ['PAYLOAD_AUD']
+          oidc=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience='+urllib.parse.quote(aud)
+          req=urllib.request.Request(oidc,headers={'Authorization':'bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              token=json.load(r)['value']
+          def get(name):
+              url=base+'?file='+urllib.parse.quote(name)
+              req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token})
+              with urllib.request.urlopen(req,timeout=60) as r:return r.read()
+          files=json.loads(get('manifest'))
+          root=pathlib.Path('/tmp/tiwoo-work-check')
+          for name in files:
+              dest=root/name
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              dest.write_bytes(get(name))
+          print('PAYLOAD_FILES='+str(len(files)))
+          PY
+
+      - name: Run AI person-context regression check
+        working-directory: /tmp/tiwoo-work-check
+        run: node scripts/ai-person-context-check.mjs
+
+      - name: Remove private payload from runner
+        if: always()
+        run: |
+          rm -rf /tmp/tiwoo-work-check
+          test ! -e /tmp/tiwoo-work-check

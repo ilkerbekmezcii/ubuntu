@@ -69,14 +69,21 @@ time.sleep(2)
 root=dump('/sdcard/picker.xml','emulator-test/picker.xml')
 file_node=find(root,'test.env',contains=True)
 if file_node is None:
+    roots=find(root,'Show roots')
+    if roots is None:
+        raise RuntimeError('DocumentsUI roots button not found')
+    tap_node(roots)
+    time.sleep(1)
+    root=dump('/sdcard/roots.xml','emulator-test/roots.xml')
     downloads=find(root,'Downloads')
-    if downloads is not None:
-        tap_node(downloads)
-        time.sleep(2)
-        root=dump('/sdcard/picker2.xml','emulator-test/picker2.xml')
-        file_node=find(root,'test.env',contains=True)
+    if downloads is None:
+        raise RuntimeError('Downloads root not found')
+    tap_node(downloads)
+    time.sleep(2)
+    root=dump('/sdcard/downloads.xml','emulator-test/downloads.xml')
+    file_node=find(root,'test.env',contains=True)
 if file_node is None:
-    raise RuntimeError('test.env not found in picker')
+    raise RuntimeError('test.env not found in Downloads')
 tap_node(file_node)
 PY
 

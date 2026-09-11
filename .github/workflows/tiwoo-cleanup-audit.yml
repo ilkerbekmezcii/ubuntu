@@ -8,24 +8,86 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Clone Tiwoo work branch
-        run: git clone --depth 1 --branch work https://github.com/ilkerbekmezcii/tiwoo.git /tmp/tiwoo
-      - name: Audit dead aliases and AI hard-coded behavior
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch Tiwoo work branch to ephemeral disk
         shell: bash
+        env:
+          SOURCE_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-source-proxy
+          SOURCE_AUD: tiwoo-source-v1
         run: |
           set -euo pipefail
-          cd /tmp/tiwoo
-          echo '=== RUNTIME LEGACY HANDLES ==='
-          grep -RInE '@kata|@tiwoo|@lina_ai' api public scripts supabase/functions package.json vercel.json 2>/dev/null || true
-          echo '=== AI ACTOR-SPECIFIC / ADMIN RULES ==='
-          grep -RInE 'ADMIN_HANDLE|adminRule|canonicalBotHandle|canonicalHandle|canonicalPlatformHandle|aliases =|const aliases|handle === "@lina"|handle==="@lina"|Özellikle Luna|özellikle Luna' supabase/functions public scripts 2>/dev/null || true
-          echo '=== RETIRED / ONE-OFF SOURCE ==='
-          find supabase/functions -maxdepth 2 -type f -name 'index.ts' | grep -E '(once|probe|worktest)' | sort || true
-          echo '=== DISABLED 410 SOURCE ==='
-          grep -RIl 'disabled: true' supabase/functions 2>/dev/null | sort || true
+          python3 - <<'PY'
+          import concurrent.futures, json, os, pathlib, urllib.parse, urllib.request
+
+          source_url=os.environ['SOURCE_URL']
+          audience=os.environ['SOURCE_AUD']
+          oidc_url=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=' + urllib.parse.quote(audience)
+          req=urllib.request.Request(oidc_url,headers={'Authorization':'bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              token=json.load(r)['value']
+
+          def get(url):
+              req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token})
+              with urllib.request.urlopen(req,timeout=90) as r:
+                  return r.read()
+
+          manifest=json.loads(get(source_url+'?op=manifest'))
+          files=manifest['files']
+          root=pathlib.Path('/tmp/tiwoo')
+          root.mkdir(parents=True,exist_ok=True)
+
+          def fetch_file(item):
+              path=item['path']
+              sha=item['sha']
+              dest=root/path
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              data=get(source_url+'?op=blob&sha='+urllib.parse.quote(sha))
+              dest.write_bytes(data)
+              return path
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+              for _ in ex.map(fetch_file,files):
+                  pass
+
+          print('SOURCE_COMMIT='+manifest['commit'])
+          print('SOURCE_FILES='+str(len(files)))
+          PY
+
+      - name: Install dependencies
+        working-directory: /tmp/tiwoo
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Run complete work build
+        working-directory: /tmp/tiwoo
+        run: npm run build
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type-check active AI Edge Functions
+        working-directory: /tmp/tiwoo
+        run: |
+          set -euo pipefail
+          deno check supabase/functions/tiwoo-ai-publisher/index.ts
+          deno check supabase/functions/tiwoo-push-dispatch/index.ts
+          deno check supabase/functions/tiwoo-ai-dm/index.ts
+          deno check supabase/functions/tiwoo-ai-mention/index.ts
+          deno check supabase/functions/tiwoo-ai-mention-worktest/index.ts
+          deno check supabase/functions/tiwoo-ai-dispatch/index.ts
+
+      - name: Confirm cleanup source is ephemeral
+        if: always()
+        run: |
+          rm -rf /tmp/tiwoo
+          test ! -e /tmp/tiwoo

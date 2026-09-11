@@ -1,4 +1,4 @@
-name: Tiwoo App Wait Temp
+name: Tiwoo Reply Relation Temp
 on:
   push:
     branches: [main]
@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 jobs:
-  wait-test:
+  reply-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -19,37 +19,109 @@ jobs:
           npm init -y >/dev/null
           npm install playwright@1.55.0 >/dev/null
           npx playwright install --with-deps chromium >/dev/null
-      - name: Measure live startup
+      - name: Verify live reply relation and no forced tag
         working-directory: /tmp
         run: |
-          cat > wait.mjs <<'EOF'
+          cat > reply-e2e.mjs <<'EOF'
           import {chromium} from 'playwright';
           import {randomUUID} from 'node:crypto';
+          import assert from 'node:assert/strict';
+
           const base='https://tiwoo.vercel.app';
+          const stamp=Date.now().toString(36).slice(-8);
+          const users=[
+            {username:`replya_${stamp}`,name:'Reply A'},
+            {username:`replyb_${stamp}`,name:'Reply B'}
+          ];
+          for(const user of users) user.password=`T!${randomUUID().replaceAll('-','').slice(0,20)}a9`;
+
           const browser=await chromium.launch({headless:true});
           const context=await browser.newContext({viewport:{width:1440,height:1000}});
           const page=await context.newPage();
-          const username=`wait_${Date.now().toString(36).slice(-8)}`;
-          const password=`T!${randomUUID().replaceAll('-','').slice(0,20)}a9`;
-          let token='';
+          const pageErrors=[];
+          page.on('pageerror',e=>pageErrors.push(String(e?.message||e)));
+
+          async function register(user){
+            const res=await page.request.post(`${base}/api/tiwoo-auth`,{data:{action:'register',username:user.username,password:user.password,name:user.name}});
+            assert.equal(res.ok(),true,`register ${user.username} failed: ${res.status()}`);
+            const body=await res.json();
+            assert.ok(body?.session?.accessToken&&body?.session?.refreshToken,'registration session missing');
+            user.accessToken=body.session.accessToken;
+            user.refreshToken=body.session.refreshToken;
+            user.handle=`@${user.username}`;
+          }
+          async function use(user){
+            await page.goto(base,{waitUntil:'domcontentloaded',timeout:30000});
+            await page.evaluate(async s=>window.TiwooSupabase.sb.auth.setSession({access_token:s.a,refresh_token:s.r}),{a:user.accessToken,r:user.refreshToken});
+            await page.reload({waitUntil:'domcontentloaded',timeout:30000});
+            await page.locator('#app:not(.hidden)').waitFor({state:'visible',timeout:15000});
+          }
+          async function mutate(payload){
+            return page.evaluate(async p=>req('/posts',{method:'POST',body:JSON.stringify(p)}),payload);
+          }
+          async function cleanup(user){
+            if(!user.accessToken)return;
+            await page.request.post(`${base}/api/tiwoo-auth`,{headers:{authorization:`Bearer ${user.accessToken}`},data:{action:'account_delete',confirmation:user.username,acknowledged:true}}).catch(()=>{});
+          }
+
           try{
             await page.goto(base,{waitUntil:'domcontentloaded',timeout:30000});
-            const reg=await page.request.post(`${base}/api/tiwoo-auth`,{data:{action:'register',username,password,name:'Tiwoo Wait'}});
-            const p=await reg.json();token=p.session.accessToken;
-            await page.evaluate(async s=>window.TiwooSupabase.sb.auth.setSession({access_token:s.a,refresh_token:s.r}),{a:p.session.accessToken,r:p.session.refreshToken});
-            await page.reload({waitUntil:'domcontentloaded',timeout:30000});
-            const samples=[];
-            for(const ms of [1000,2500,5000,8000,11000]){
-              const already=samples.length?samples[samples.length-1].at:0;await page.waitForTimeout(ms-already);
-              samples.push({at:ms,app:await page.locator('#app:not(.hidden)').count(),landing:await page.locator('#publicLanding:not(.hidden)').count(),composer:await page.locator('#inlineText').count()});
-            }
-            console.log('TIWOO_WAIT='+JSON.stringify(samples));
+            await register(users[0]);
+            await register(users[1]);
+
+            const rootText=`reply relation root ${stamp}`;
+            const firstText=`first reply ${stamp}`;
+            const nestedText=`nested reply without forced tag ${stamp}`;
+
+            await use(users[0]);
+            const rootResult=await mutate({action:'create',text:rootText,clientId:`e2e-root-${stamp}`});
+            const root=(rootResult.posts||[]).find(p=>p.text===rootText);
+            assert.ok(root?.id,'root post missing');
+
+            await use(users[1]);
+            const firstResult=await mutate({action:'reply',id:Number(root.id),text:firstText,clientId:`e2e-first-${stamp}`});
+            const rootAfterFirst=(firstResult.posts||[]).find(p=>Number(p.id)===Number(root.id));
+            const first=(rootAfterFirst?.repliesData||[]).find(r=>r.text===firstText);
+            assert.ok(first?.id,'first reply missing');
+            assert.equal(Number(first.parentId),Number(root.id),'first reply parent relation wrong');
+
+            await use(users[0]);
+            await page.evaluate(id=>go('detail',{detail:Number(id)}),Number(root.id));
+            const firstCard=page.locator(`[data-reply-id="${first.id}"]`);
+            await firstCard.waitFor({state:'visible',timeout:10000});
+            const firstRoute=(await firstCard.locator('.reply-route').innerText()).replace(/\s+/g,' ').trim();
+            assert.ok(firstRoute.includes(users[1].handle),`first route missing sender: ${firstRoute}`);
+            assert.ok(firstRoute.includes(users[0].handle),`first route missing target: ${firstRoute}`);
+            assert.ok(firstRoute.includes('→'),`first route missing arrow: ${firstRoute}`);
+
+            await firstCard.locator('[data-reply-to]').click();
+            await page.locator('#replyModal:not(.hidden)').waitFor({state:'visible',timeout:5000});
+            assert.equal(await page.locator('#replyModalText').inputValue(),'','reply composer should start empty');
+            await page.locator('#replyModalText').fill(nestedText);
+            await page.locator('#replyModalSend').click();
+            await page.locator('#replyModal.hidden').waitFor({state:'attached',timeout:10000}).catch(()=>{});
+
+            const nestedCard=page.locator('.reply-card').filter({has:page.locator('.reply-text',{hasText:nestedText})}).first();
+            await nestedCard.waitFor({state:'visible',timeout:10000});
+            const nestedBody=(await nestedCard.locator('.reply-text').innerText()).trim();
+            const nestedRoute=(await nestedCard.locator('.reply-route').innerText()).replace(/\s+/g,' ').trim();
+            assert.equal(nestedBody,nestedText,'reply body was modified');
+            assert.equal(nestedBody.includes(users[1].handle),false,'target handle was automatically appended');
+            assert.ok(nestedRoute.includes(users[0].handle),`nested route missing sender: ${nestedRoute}`);
+            assert.ok(nestedRoute.includes(users[1].handle),`nested route missing target: ${nestedRoute}`);
+            assert.ok(nestedRoute.includes('→'),`nested route missing arrow: ${nestedRoute}`);
+
+            const stackOverflow=pageErrors.filter(x=>/Maximum call stack size exceeded/i.test(x));
+            assert.deepEqual(stackOverflow,[],'stack overflow returned during reply test');
+            console.log('TIWOO_REPLY_E2E='+JSON.stringify({rootId:root.id,firstReplyId:first.id,firstRoute,nestedBody,nestedRoute,pageErrors}));
           } finally {
-            if(token)await page.request.post(`${base}/api/tiwoo-auth`,{headers:{authorization:`Bearer ${token}`},data:{action:'account_delete',confirmation:username,acknowledged:true}}).catch(()=>{});
-            await context.close();await browser.close();
+            await cleanup(users[0]);
+            await cleanup(users[1]);
+            await context.close();
+            await browser.close();
           }
           EOF
-          node wait.mjs
-      - name: Cleanup
+          node reply-e2e.mjs
+      - name: Cleanup runner files
         if: always()
-        run: rm -f /tmp/wait.mjs
+        run: rm -f /tmp/reply-e2e.mjs

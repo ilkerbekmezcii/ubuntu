@@ -79,6 +79,23 @@ jobs:
           tar -xzf /tmp/game-src.tar.gz --strip-components=1 -C /tmp/game-src
           test -f /tmp/game-src/gradlew
 
+      - name: Check bundled JavaScript syntax
+        working-directory: /tmp/game-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          COUNT=0
+          if [ -d app/src/main/assets ]; then
+            while IFS= read -r -d '' FILE; do
+              if ! node --check "$FILE" >/dev/null 2>&1; then
+                echo "JS_SYNTAX_ERROR"
+                exit 1
+              fi
+              COUNT=$((COUNT + 1))
+            done < <(find app/src/main/assets -type f -name '*.js' -print0)
+          fi
+          echo "JS_SYNTAX_OK count=${COUNT}"
+
       - name: Build debug APK
         working-directory: /tmp/game-src
         shell: bash

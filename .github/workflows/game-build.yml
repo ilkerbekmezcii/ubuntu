@@ -86,7 +86,7 @@ jobs:
           set -euo pipefail
           chmod +x gradlew
           ./gradlew clean assembleDebug --stacktrace --no-daemon
-          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          APK="$(find . -type f -path '*/outputs/apk/debug/*.apk' -name '*.apk' | head -n 1)"
           test -n "$APK"
           echo "BUILD_OK repo=${{ steps.request.outputs.repo }} ref=${{ steps.request.outputs.ref }}"
           sha256sum "$APK" | sed 's#  .*#  app-debug.apk#'

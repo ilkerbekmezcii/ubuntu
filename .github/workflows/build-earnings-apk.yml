@@ -2,7 +2,7 @@ name: Build Microsoft Earnings APK
 
 on:
   push:
-    branches: [main]
+    branches: [work]
     paths:
       - 'android-earnings/**'
       - '.github/workflows/build-earnings-apk.yml'
@@ -15,24 +15,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
-      PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Enable public-client OAuth for the existing Entra app
-        shell: bash
-        run: |
-          set -euo pipefail
-          az login --tenant "$PARTNER_CENTER_TENANT_ID" --use-device-code --allow-no-subscriptions >/tmp/login.json
-          OBJ=$(az ad app show --id "$PARTNER_CENTER_CLIENT_ID" --query id -o tsv)
-          test -n "$OBJ"
-          az rest --method PATCH \
-            --uri "https://graph.microsoft.com/v1.0/applications/$OBJ" \
-            --headers 'Content-Type=application/json' \
-            --body '{"isFallbackPublicClient":true}' >/dev/null
-          echo 'public_client_enabled=true'
 
       - uses: actions/setup-java@v4
         with:
@@ -43,19 +27,27 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}" -type f -name sdkmanager -perm -111 2>/dev/null | head -n1)
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
+
       - name: Build APK
         working-directory: android-earnings
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$PARTNER_CENTER_CLIENT_ID"
-          test -n "$PARTNER_CENTER_TENANT_ID"
-          gradle --no-daemon assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk ../Microsoft-Earnings-debug.apk
-          ls -lh ../Microsoft-Earnings-debug.apk
+          gradle --no-daemon clean assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../Microsoft-Earnings-v1.1-debug.apk
+          sha256sum ../Microsoft-Earnings-v1.1-debug.apk
+          unzip -t ../Microsoft-Earnings-v1.1-debug.apk >/dev/null
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Microsoft-Earnings-debug-apk
-          path: Microsoft-Earnings-debug.apk
+          name: Microsoft-Earnings-v1.1-APK
+          path: Microsoft-Earnings-v1.1-debug.apk
           if-no-files-found: error
+          retention-days: 7

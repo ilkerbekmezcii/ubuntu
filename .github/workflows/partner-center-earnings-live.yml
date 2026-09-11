@@ -198,8 +198,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
+          SDKMANAGER="${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}" -type f -name sdkmanager -perm -111 2>/dev/null | head -n1 || true)
+          fi
+          test -n "$SDKMANAGER"
+          echo "sdkmanager_path=$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
           curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.9-bin.zip
           unzip -q /tmp/gradle.zip -d /tmp
           cd earnings-apk

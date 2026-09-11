@@ -22,28 +22,18 @@ public final class MicrosoftApi {
         DashboardResult(String text,int count,double gross,double net){displayText=text;newPurchaseCount=count;newPurchaseGrossUsd=gross;newPurchaseNetUsd=net;}
     }
 
-    private static final class Purchase{
-        double gross;
-        double net;
-    }
-
+    private static final class Purchase{double gross;double net;}
     private static final class RangeData{
         double grossUsd;
         double netUsd;
         final LinkedHashMap<String,Purchase> purchases=new LinkedHashMap<>();
     }
-
     private static final class SyncResult{
         final RangeData data;
         final String status;
         SyncResult(RangeData d,String s){data=d;status=s;}
     }
-
-    private static final class PurchaseDelta{
-        int count;
-        double gross;
-        double net;
-    }
+    private static final class PurchaseDelta{int count;double gross;double net;}
 
     private static String enc(String s) throws Exception{return URLEncoder.encode(s,"UTF-8");}
 
@@ -79,33 +69,11 @@ public final class MicrosoftApi {
         return out.toString("UTF-8");
     }
 
-    private static JSONObject firstValue(JSONObject root){
-        JSONArray value=root.optJSONArray("value");
-        if(value!=null&&value.length()>0)return value.optJSONObject(0);
-        return root;
-    }
-
     private static void saveTokenResponse(Context ctx,JSONObject j) throws Exception{
         String at=j.optString("access_token",null);if(at!=null&&!at.isEmpty())AuthStore.save(ctx,AuthStore.ACCESS_TOKEN,at);
         String rt=j.optString("refresh_token",null);if(rt!=null&&!rt.isEmpty())AuthStore.save(ctx,AuthStore.REFRESH_TOKEN,rt);
         long expiresIn=Math.max(60,j.optLong("expires_in",3600));
         AuthStore.save(ctx,AuthStore.EXPIRES_AT,Long.toString(System.currentTimeMillis()+expiresIn*1000L));
-    }
-
-    public static JSONObject startDeviceCode(Context ctx) throws Exception{
-        String tenant=require(ctx,AuthStore.TENANT_ID,"Tenant ID"),client=require(ctx,AuthStore.CLIENT_ID,"Client ID");
-        Map<String,String> f=new LinkedHashMap<>();f.put("client_id",client);f.put("scope",SCOPE);
-        return postForm("https://login.microsoftonline.com/"+tenant+"/oauth2/v2.0/devicecode",f);
-    }
-
-    public static JSONObject pollDeviceCode(Context ctx,String deviceCode) throws Exception{
-        Map<String,String> f=new LinkedHashMap<>();
-        f.put("grant_type","urn:ietf:params:oauth:grant-type:device_code");
-        f.put("client_id",require(ctx,AuthStore.CLIENT_ID,"Client ID"));
-        f.put("device_code",deviceCode);
-        JSONObject j=postForm(tokenUrl(ctx),f);
-        if(j.optInt("_http")==200&&j.has("access_token"))saveTokenResponse(ctx,j);
-        return j;
     }
 
     public static String accessToken(Context ctx) throws Exception{
@@ -137,7 +105,75 @@ public final class MicrosoftApi {
         int code=c.getResponseCode();
         String body=read(code<400?c.getInputStream():c.getErrorStream());
         if(code>=400)throw new IOException("HTTP "+code+" "+body);
-        JSONObject j=new JSONObject(body.isEmpty()?"{}":body);j.put("_http",code);return j;
+
+        String trimmed=body==null?"":body.trim();
+        JSONObject j;
+        if(trimmed.isEmpty())j=new JSONObject();
+        else if(trimmed.startsWith("[")){
+            j=new JSONObject();
+            j.put("value",new JSONArray(trimmed));
+        }else j=new JSONObject(trimmed);
+        j.put("_http",code);
+        String location=c.getHeaderField("Location");
+        if(location!=null&&!location.isEmpty())j.put("_location",location);
+        return j;
+    }
+
+    private static String normalizedKey(String key){return key==null?"":key.toLowerCase(Locale.US).replaceAll("[^a-z0-9]","");}
+
+    private static String findRequestId(Object value){
+        if(value instanceof JSONObject){
+            JSONObject o=(JSONObject)value;
+            Iterator<String> keys=o.keys();
+            while(keys.hasNext()){
+                String key=keys.next();
+                if("requestid".equals(normalizedKey(key))){
+                    String id=o.optString(key,"").trim();
+                    if(!id.isEmpty())return id;
+                }
+            }
+            keys=o.keys();
+            while(keys.hasNext()){
+                String key=keys.next();
+                if(key.startsWith("_"))continue;
+                String nested=findRequestId(o.opt(key));
+                if(nested!=null&&!nested.isEmpty())return nested;
+            }
+        }else if(value instanceof JSONArray){
+            JSONArray a=(JSONArray)value;
+            for(int i=0;i<a.length();i++){
+                String nested=findRequestId(a.opt(i));
+                if(nested!=null&&!nested.isEmpty())return nested;
+            }
+        }
+        return null;
+    }
+
+    private static String requestIdFromResponse(JSONObject response){
+        String id=findRequestId(response);
+        if(id!=null&&!id.isEmpty())return id;
+        String location=response.optString("_location","");
+        if(!location.isEmpty()){
+            try{
+                String path=new URL(location).getPath();
+                if(path!=null){
+                    int slash=path.lastIndexOf('/');
+                    String tail=slash>=0?path.substring(slash+1):path;
+                    if(tail.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))return tail;
+                }
+            }catch(Exception ignored){}
+        }
+        return "";
+    }
+
+    private static JSONObject firstValue(JSONObject root){
+        Object value=root.opt("value");
+        if(value instanceof JSONArray){
+            JSONArray a=(JSONArray)value;
+            if(a.length()>0&&a.opt(0) instanceof JSONObject)return a.optJSONObject(0);
+        }
+        if(value instanceof JSONObject)return (JSONObject)value;
+        return root;
     }
 
     private static String downloadBlob(String url) throws Exception{
@@ -150,9 +186,9 @@ public final class MicrosoftApi {
     private static String queueExport(Context ctx,LocalDate from,LocalDate to) throws Exception{
         String filter="earningForDate ge "+from+" and earningForDate le "+to;
         String url="https://api.partner.microsoft.com/v1.0/payouts/transactionhistory?$filter="+enc(filter)+"&fileformat=csv";
-        JSONObject queued=authorizedJson(ctx,"POST",url);JSONObject item=firstValue(queued);
-        String requestId=item.optString("requestId","");
-        if(requestId.isEmpty())throw new IOException("Export requestId dönmedi: "+queued);
+        JSONObject queued=authorizedJson(ctx,"POST",url);
+        String requestId=requestIdFromResponse(queued);
+        if(requestId.isEmpty())throw new IOException("Export requestId dönmedi (HTTP "+queued.optInt("_http")+"): "+queued.toString());
         return requestId;
     }
 

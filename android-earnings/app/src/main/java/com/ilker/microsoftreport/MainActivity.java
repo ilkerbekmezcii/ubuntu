@@ -9,7 +9,6 @@ import android.net.Uri;
 import android.os.*;
 import android.view.View;
 import android.widget.*;
-import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -20,10 +19,8 @@ import java.util.concurrent.Executors;
 public class MainActivity extends Activity {
     private static final int PICK_ENV_FILE=1201;
     private final ExecutorService io=Executors.newSingleThreadExecutor();
-    private TextView status,report,deviceCode;
+    private TextView status,report,setupHint;
     private LinearLayout setupBox;
-    private Button openLoginButton;
-    private String verificationUrl;
 
     private final BroadcastReceiver receiver=new BroadcastReceiver(){
         @Override public void onReceive(Context c,Intent i){
@@ -36,6 +33,7 @@ public class MainActivity extends Activity {
         super.onCreate(b);
         buildUi();
         loadLocalState();
+        handleOAuthIntent(getIntent());
         if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},10);
     }
@@ -51,9 +49,8 @@ public class MainActivity extends Activity {
 
         setupBox=new LinearLayout(this); setupBox.setOrientation(LinearLayout.VERTICAL);
         Button pickEnv=new Button(this); pickEnv.setText(".env dosyası seç"); setupBox.addView(pickEnv);
-        deviceCode=new TextView(this); deviceCode.setText("Kurulum gerekli"); deviceCode.setTextSize(16); deviceCode.setTextIsSelectable(true); deviceCode.setPadding(0,14,0,10); setupBox.addView(deviceCode);
-        Button login=new Button(this); login.setText("Microsoft ile giriş / MFA"); setupBox.addView(login);
-        openLoginButton=new Button(this); openLoginButton.setText("Microsoft giriş sayfasını aç"); openLoginButton.setEnabled(false); setupBox.addView(openLoginButton);
+        setupHint=new TextView(this); setupHint.setText("Kurulum gerekli"); setupHint.setTextSize(15); setupHint.setPadding(0,12,0,10); setupBox.addView(setupHint);
+        Button login=new Button(this); login.setText("Microsoft ile giriş"); setupBox.addView(login);
         root.addView(setupBox);
 
         status=new TextView(this); status.setText("Durum: hazır"); status.setTextSize(13); status.setPadding(0,18,0,0); root.addView(status);
@@ -61,7 +58,6 @@ public class MainActivity extends Activity {
 
         pickEnv.setOnClickListener(v->pickEnvFile());
         login.setOnClickListener(v->beginLogin());
-        openLoginButton.setOnClickListener(v->{ if(verificationUrl!=null) startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(verificationUrl))); });
     }
 
     private void loadLocalState(){
@@ -74,7 +70,7 @@ public class MainActivity extends Activity {
                 ensurePolling();
             }else{
                 setupBox.setVisibility(View.VISIBLE);
-                deviceCode.setText(configured?"OAuth ayarları hazır. Microsoft ile giriş yapın.":"Önce .env dosyasını seçin.");
+                setupHint.setText(configured?"OAuth ayarları hazır. Microsoft ile giriş yapın.":"Önce .env dosyasını seçin.");
             }
         }catch(Exception e){status.setText("Yerel durum okunamadı: "+e.getMessage());}
     }
@@ -102,7 +98,11 @@ public class MainActivity extends Activity {
                 if((oldT!=null&&!oldT.equals(values.tenantId))||(oldC!=null&&!oldC.equals(values.clientId)))AuthStore.clearSession(this);
                 AuthStore.save(this,AuthStore.TENANT_ID,values.tenantId);
                 AuthStore.save(this,AuthStore.CLIENT_ID,values.clientId);
-                runOnUiThread(()->{deviceCode.setText(".env yüklendi ✓");status.setText("Microsoft girişi başlatılıyor…");beginLogin();});
+                runOnUiThread(()->{
+                    setupHint.setText(".env yüklendi ✓");
+                    status.setText("Microsoft giriş ekranı açılıyor…");
+                    beginLogin();
+                });
             }catch(Exception e){runOnUiThread(()->status.setText(".env okunamadı: "+e.getMessage()));}
         });
     }
@@ -140,39 +140,48 @@ public class MainActivity extends Activity {
 
     private void beginLogin(){
         try{
-            if(!notEmpty(AuthStore.load(this,AuthStore.TENANT_ID))||!notEmpty(AuthStore.load(this,AuthStore.CLIENT_ID))){status.setText("Önce .env dosyasını seçin");return;}
+            if(!notEmpty(AuthStore.load(this,AuthStore.TENANT_ID))||!notEmpty(AuthStore.load(this,AuthStore.CLIENT_ID))){
+                status.setText("Önce .env dosyasını seçin");
+                return;
+            }
         }catch(Exception e){status.setText(e.getMessage());return;}
-        status.setText("Microsoft cihaz kodu alınıyor…");
+        status.setText("Microsoft giriş ekranı hazırlanıyor…");
         io.execute(()->{
             try{
-                JSONObject j=MicrosoftApi.startDeviceCode(this);
-                if(j.optInt("_http")!=200||!j.has("device_code"))throw new Exception(j.optString("error_description",j.toString()));
-                String dc=j.getString("device_code"),uc=j.getString("user_code");
-                verificationUrl=j.optString("verification_uri","https://microsoft.com/devicelogin");
-                int interval=Math.max(5,j.optInt("interval",5));
-                String message=j.optString("message","Microsoft giriş sayfasında şu kodu girin: "+uc);
-                runOnUiThread(()->{deviceCode.setText("Kod: "+uc);openLoginButton.setEnabled(true);status.setText(message);startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(verificationUrl)));});
-                pollLogin(dc,interval);
+                Uri authorization=MicrosoftLogin.begin(this);
+                runOnUiThread(()->{
+                    status.setText("Microsoft hesabınızla giriş yapın ve MFA'yı tamamlayın");
+                    startActivity(new Intent(Intent.ACTION_VIEW,authorization));
+                });
             }catch(Exception e){runOnUiThread(()->status.setText("Giriş başlatılamadı: "+e.getMessage()));}
         });
     }
 
-    private void pollLogin(String dc,int initialInterval) throws Exception{
-        int interval=initialInterval;
-        long deadline=System.currentTimeMillis()+15*60_000L;
-        while(System.currentTimeMillis()<deadline){
-            Thread.sleep(interval*1000L);
-            JSONObject j=MicrosoftApi.pollDeviceCode(this,dc);
-            if(j.optInt("_http")==200&&j.has("access_token")){
-                runOnUiThread(()->{setupBox.setVisibility(View.GONE);status.setText("Giriş tamamlandı • 2 dakikalık kontrol başlatıldı");ensurePolling();});
-                return;
+    private void handleOAuthIntent(Intent intent){
+        if(intent==null||!MicrosoftLogin.isCallback(intent.getData()))return;
+        Uri callback=intent.getData();
+        status.setText("Microsoft girişi tamamlanıyor…");
+        io.execute(()->{
+            try{
+                MicrosoftLogin.finish(this,callback);
+                runOnUiThread(()->{
+                    setupBox.setVisibility(View.GONE);
+                    status.setText("Giriş tamamlandı • 2 dakikalık kontrol başlatıldı");
+                    ensurePolling();
+                });
+            }catch(Exception e){
+                runOnUiThread(()->{
+                    setupBox.setVisibility(View.VISIBLE);
+                    status.setText("Microsoft giriş hatası: "+e.getMessage());
+                });
             }
-            String err=j.optString("error","");
-            if("authorization_pending".equals(err))continue;
-            if("slow_down".equals(err)){interval+=5;continue;}
-            throw new Exception(j.optString("error_description",j.toString()));
-        }
-        throw new Exception("Giriş süresi doldu");
+        });
+    }
+
+    @Override protected void onNewIntent(Intent intent){
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleOAuthIntent(intent);
     }
 
     private void ensurePolling(){

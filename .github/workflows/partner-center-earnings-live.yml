@@ -1,4 +1,4 @@
-name: Partner Center Entra Setup via Ubuntu
+name: Partner Center Earnings via Azure CLI User Token
 
 on:
   push:
@@ -11,48 +11,59 @@ permissions:
   contents: read
 
 jobs:
-  setup:
+  earnings:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
       PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
-      DEV_CENTER_APP_ID: 4990cffe-04e8-4e8b-808a-1175604b879f
-      GRAPH_APP_ID: 00000003-0000-0000-c000-000000000000
-      GRAPH_USER_READ_SCOPE_ID: e1fe6dd8-ba31-4d61-89e7-88639da4683d
+      TZ: Europe/Istanbul
     steps:
       - name: Sign in interactively with device code
         shell: bash
         run: |
           set -euo pipefail
-          az login --tenant "$PARTNER_CENTER_TENANT_ID" --use-device-code --allow-no-subscriptions
+          az login --tenant "$PARTNER_CENTER_TENANT_ID" --use-device-code --allow-no-subscriptions >/tmp/az-login.json
+          echo "azure_user_login=success"
 
-      - name: Ensure Microsoft Dev Center service principal exists
+      - name: Get Partner Center user token
         shell: bash
         run: |
           set -euo pipefail
-          az ad sp show --id "$DEV_CENTER_APP_ID" >/tmp/devcenter-sp.json 2>/dev/null || az ad sp create --id "$DEV_CENTER_APP_ID" >/tmp/devcenter-sp.json
-          jq '{appId,displayName,id}' /tmp/devcenter-sp.json
+          TOKEN=$(az account get-access-token --resource https://api.partner.microsoft.com --query accessToken -o tsv)
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/partner_user_token"
+          PAYLOAD=$(printf '%s' "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{l=length($0)%4;if(l==2)$0=$0"==";else if(l==3)$0=$0"=";print}' | base64 -d 2>/dev/null || true)
+          echo "token_aud=$(printf '%s' "$PAYLOAD" | jq -r '.aud // empty')"
+          echo "token_has_upn=$(printf '%s' "$PAYLOAD" | jq 'has("upn") or has("preferred_username")')"
+          echo "token_has_oid=$(printf '%s' "$PAYLOAD" | jq 'has("oid")')"
 
-      - name: Add delegated permissions to Partner Center app
+      - name: Call Earnings API
         shell: bash
         run: |
           set -euo pipefail
-          DEV_SCOPE_ID=$(az ad sp show --id "$DEV_CENTER_APP_ID" --query "oauth2PermissionScopes[?value=='user_impersonation'].id | [0]" -o tsv)
-          test -n "$DEV_SCOPE_ID"
-          az ad app permission add --id "$PARTNER_CENTER_CLIENT_ID" --api "$DEV_CENTER_APP_ID" --api-permissions "${DEV_SCOPE_ID}=Scope"
-          az ad app permission add --id "$PARTNER_CENTER_CLIENT_ID" --api "$GRAPH_APP_ID" --api-permissions "${GRAPH_USER_READ_SCOPE_ID}=Scope" || true
-          echo "delegated_permissions_added"
-
-      - name: Grant admin consent
-        shell: bash
-        run: |
-          set -euo pipefail
-          az ad app permission admin-consent --id "$PARTNER_CENTER_CLIENT_ID"
-          echo "admin_consent_done"
-
-      - name: Verify permissions
-        shell: bash
-        run: |
-          set -euo pipefail
-          az ad app permission list --id "$PARTNER_CENTER_CLIENT_ID" -o json | jq '[.[] | {resourceAppId,resourceAccess}]'
+          TOKEN=$(cat "$RUNNER_TEMP/partner_user_token")
+          TODAY=$(TZ=Europe/Istanbul date +%F)
+          FILTER="earningForDate ge ${TODAY} and earningForDate le ${TODAY}"
+          BODY=$(mktemp)
+          HEADERS=$(mktemp)
+          METRICS=$(curl -sS -D "$HEADERS" -o "$BODY" -w '%{http_code} %{time_total}' \
+            -X POST \
+            -G 'https://api.partner.microsoft.com/v1.0/payouts/transactionhistory' \
+            --data-urlencode "\$filter=${FILTER}" \
+            --data-urlencode 'fileformat=csv' \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H 'Accept: application/json' \
+            -H 'Content-Length: 0')
+          CODE=$(awk '{print $1}' <<<"$METRICS")
+          TIME=$(awk '{print $2}' <<<"$METRICS")
+          echo "date=$TODAY"
+          echo "earnings_http_status=$CODE"
+          echo "earnings_seconds=$TIME"
+          echo 'response_headers_begin'
+          grep -Ei '^(HTTP/|request-id:|location:|content-type:|retry-after:)' "$HEADERS" || true
+          echo 'response_headers_end'
+          echo 'response_body_begin'
+          cat "$BODY"
+          echo
+          echo 'response_body_end'

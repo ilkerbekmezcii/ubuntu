@@ -1,4 +1,4 @@
-name: Partner Center Earnings via Azure CLI User Token
+name: Partner Center Earnings via Direct Device OAuth
 
 on:
   push:
@@ -13,30 +13,88 @@ permissions:
 jobs:
   earnings:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
       TZ: Europe/Istanbul
+      AZURE_CLI_PUBLIC_CLIENT_ID: 04b07795-8ddb-461a-bbee-02f9e1bf7b46
     steps:
-      - name: Sign in interactively with device code
+      - name: Start Partner Center device authorization and poll
         shell: bash
         run: |
           set -euo pipefail
-          az login --tenant "$PARTNER_CENTER_TENANT_ID" --use-device-code --allow-no-subscriptions >/tmp/az-login.json
-          echo "azure_user_login=success"
+          DEVICE=$(mktemp)
+          curl -sS -f \
+            -X POST "https://login.microsoftonline.com/${PARTNER_CENTER_TENANT_ID}/oauth2/v2.0/devicecode" \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode "client_id=${AZURE_CLI_PUBLIC_CLIENT_ID}" \
+            --data-urlencode 'scope=https://api.partner.microsoft.com/.default offline_access openid profile' \
+            -o "$DEVICE"
 
-      - name: Get Partner Center user token
+          VERIFY=$(jq -r '.verification_uri' "$DEVICE")
+          USER_CODE=$(jq -r '.user_code' "$DEVICE")
+          DEVICE_CODE=$(jq -r '.device_code' "$DEVICE")
+          INTERVAL=$(jq -r '.interval // 5' "$DEVICE")
+          EXPIRES=$(jq -r '.expires_in // 900' "$DEVICE")
+
+          echo "verification_uri=$VERIFY"
+          echo "user_code=$USER_CODE"
+          echo "polling_for_up_to=${EXPIRES}s"
+
+          START=$(date +%s)
+          TOKEN_BODY=$(mktemp)
+          while true; do
+            NOW=$(date +%s)
+            if [ $((NOW-START)) -ge "$EXPIRES" ]; then
+              echo 'device_code_expired'
+              exit 1
+            fi
+
+            HTTP=$(curl -sS -o "$TOKEN_BODY" -w '%{http_code}' \
+              -X POST "https://login.microsoftonline.com/${PARTNER_CENTER_TENANT_ID}/oauth2/v2.0/token" \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
+              --data-urlencode "client_id=${AZURE_CLI_PUBLIC_CLIENT_ID}" \
+              --data-urlencode "device_code=${DEVICE_CODE}")
+
+            if [ "$HTTP" = "200" ]; then
+              ACCESS_TOKEN=$(jq -r '.access_token' "$TOKEN_BODY")
+              REFRESH_TOKEN=$(jq -r '.refresh_token // empty' "$TOKEN_BODY")
+              test -n "$ACCESS_TOKEN"
+              echo "::add-mask::$ACCESS_TOKEN"
+              [ -z "$REFRESH_TOKEN" ] || echo "::add-mask::$REFRESH_TOKEN"
+              printf '%s' "$ACCESS_TOKEN" > "$RUNNER_TEMP/partner_user_token"
+              echo "access_token_received=true"
+              echo "refresh_token_received=$([ -n "$REFRESH_TOKEN" ] && echo true || echo false)"
+              break
+            fi
+
+            ERROR=$(jq -r '.error // empty' "$TOKEN_BODY")
+            case "$ERROR" in
+              authorization_pending)
+                sleep "$INTERVAL"
+                ;;
+              slow_down)
+                INTERVAL=$((INTERVAL+5))
+                sleep "$INTERVAL"
+                ;;
+              *)
+                echo "device_oauth_error=$ERROR"
+                jq -c '{error,error_description}' "$TOKEN_BODY"
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Verify Partner Center token claims
         shell: bash
         run: |
           set -euo pipefail
-          TOKEN=$(az account get-access-token --resource https://api.partner.microsoft.com --query accessToken -o tsv)
-          test -n "$TOKEN"
-          echo "::add-mask::$TOKEN"
-          printf '%s' "$TOKEN" > "$RUNNER_TEMP/partner_user_token"
+          TOKEN=$(cat "$RUNNER_TEMP/partner_user_token")
           PAYLOAD=$(printf '%s' "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{l=length($0)%4;if(l==2)$0=$0"==";else if(l==3)$0=$0"=";print}' | base64 -d 2>/dev/null || true)
           echo "token_aud=$(printf '%s' "$PAYLOAD" | jq -r '.aud // empty')"
-          echo "token_has_upn=$(printf '%s' "$PAYLOAD" | jq 'has("upn") or has("preferred_username")')"
           echo "token_has_oid=$(printf '%s' "$PAYLOAD" | jq 'has("oid")')"
+          echo "token_has_user_claim=$(printf '%s' "$PAYLOAD" | jq 'has("upn") or has("preferred_username") or has("unique_name")')"
 
       - name: Call Earnings API
         shell: bash

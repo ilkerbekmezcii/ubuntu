@@ -69,23 +69,29 @@ tap_node(btn)
 time.sleep(2)
 
 root=dump('/sdcard/picker.xml','emulator-test/picker.xml')
+roots=find(root,'Show roots',field='desc')
+if roots is None:
+    raise RuntimeError('DocumentsUI roots button not found')
+tap_node(roots)
+time.sleep(1)
+root=dump('/sdcard/roots.xml','emulator-test/roots.xml')
+downloads=find(root,'Downloads',field='text')
+if downloads is None:
+    raise RuntimeError('Downloads root not found')
+tap_node(downloads)
+time.sleep(2)
+root=dump('/sdcard/downloads-grid.xml','emulator-test/downloads-grid.xml')
+
+list_view=find(root,'List view',field='desc')
+if list_view is not None:
+    tap_node(list_view)
+    time.sleep(1)
+    root=dump('/sdcard/downloads-list.xml','emulator-test/downloads-list.xml')
+
 file_node=find(root,'test.env',field='text')
 if file_node is None:
-    roots=find(root,'Show roots',field='desc')
-    if roots is None:
-        raise RuntimeError('DocumentsUI roots button not found')
-    tap_node(roots)
-    time.sleep(1)
-    root=dump('/sdcard/roots.xml','emulator-test/roots.xml')
-    downloads=find(root,'Downloads',field='text')
-    if downloads is None:
-        raise RuntimeError('Downloads root not found')
-    tap_node(downloads)
-    time.sleep(2)
-    root=dump('/sdcard/downloads.xml','emulator-test/downloads.xml')
-    file_node=find(root,'test.env',field='text')
-if file_node is None:
     raise RuntimeError('test.env not found in Downloads')
+# Tap the file name itself; in list mode this selects/opens the document rather than previewing it.
 tap_node(file_node)
 PY
 
@@ -94,11 +100,10 @@ adb shell dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp' > "$OUT/f
 adb shell uiautomator dump /sdcard/window-after-select.xml >/dev/null || true
 adb pull /sdcard/window-after-select.xml "$OUT/window-after-select.xml" >/dev/null || true
 adb exec-out screencap -p > "$OUT/after-select.png" || true
-adb shell run-as "$PKG" sh -c 'pwd; find . -maxdepth 3 -type f -print' > "$OUT/app-files.txt" || true
-
-DATA_DIR=$(adb shell run-as "$PKG" pwd | tr -d '\r')
-PREF="$DATA_DIR/shared_prefs/auth_store.xml"
-adb shell run-as "$PKG" cat "$PREF" > "$OUT/auth_store.xml"
+adb exec-out run-as "$PKG" pwd > "$OUT/app-pwd.txt"
+adb exec-out run-as "$PKG" ls -la > "$OUT/app-files.txt" || true
+adb exec-out run-as "$PKG" ls -la shared_prefs > "$OUT/shared-prefs-list.txt"
+adb exec-out run-as "$PKG" cat shared_prefs/auth_store.xml > "$OUT/auth_store.xml"
 grep -Fq 'name="tenant_id"' "$OUT/auth_store.xml"
 grep -Fq 'name="client_id"' "$OUT/auth_store.xml"
 

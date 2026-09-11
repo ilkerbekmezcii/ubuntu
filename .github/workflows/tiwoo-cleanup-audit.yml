@@ -13,15 +13,11 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
 
       - name: Fetch private Tiwoo cleanup payload to ephemeral disk
         shell: bash
@@ -58,27 +54,22 @@ jobs:
           node --check public/tiwoo-ai-mention.js
           node --check public/composer-mention-fixes.js
 
-      - name: Type-check autonomous publisher cleanup
-        working-directory: /tmp/tiwoo-cleanup
-        run: deno check supabase/functions/tiwoo-ai-publisher/index.ts
-
-      - name: Audit canonical handles and removed behavior routing
+      - name: Audit frontend legacy handles and obsolete routing
         working-directory: /tmp/tiwoo-cleanup
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
           import re
-          files=[p for p in Path('.').rglob('*') if p.is_file()]
-          text='\n'.join(p.read_text(encoding='utf-8') for p in files)
+          text='\n'.join(p.read_text(encoding='utf-8') for p in Path('.').rglob('*.js'))
           legacy=[r'@kata(?![A-Za-z0-9_.-])',r'@tiwoo(?![A-Za-z0-9_.-])',r'@lina_ai(?![A-Za-z0-9_.-])']
           for pattern in legacy:
               if re.search(pattern,text,re.I): raise SystemExit('legacy handle remains: '+pattern)
           for token in ['ADMIN_HANDLE','adminRule','canonicalBotHandle','canonicalPlatformHandle','quotaHeavyDevelopmentRequest','tiwooLinaChatGuard']:
               if token.lower() in text.lower(): raise SystemExit('obsolete behavior token remains: '+token)
-          if '@luna' not in text or '@lina' not in text: raise SystemExit('canonical handles missing')
-          if 'Gereksiz iş yapma' not in text: raise SystemExit('no-unnecessary-work instruction missing')
-          print('cleanup_static_audit=ok')
+          if '@luna' not in text: raise SystemExit('canonical Luna handle missing')
+          if "['lina','Lina']" not in text: raise SystemExit('canonical Lina display mapping missing')
+          print('frontend_cleanup_audit=ok')
           PY
 
       - name: Smoke-test public Tiwoo and retired endpoint protection

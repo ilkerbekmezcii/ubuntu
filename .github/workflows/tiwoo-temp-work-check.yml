@@ -1,0 +1,22 @@
+name: Tiwoo temporary work validation
+on:
+  push:
+    paths:
+      - '.github/workflows/tiwoo-temp-work-check.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Clone Tiwoo work branch
+        run: git clone --depth 1 --branch work https://github.com/ilkerbekmezcii/tiwoo.git tiwoo
+      - name: Run Tiwoo work checks
+        working-directory: tiwoo
+        run: npm run test:work

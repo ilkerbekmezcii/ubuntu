@@ -1,0 +1,215 @@
+name: Build Microsoft Earnings APK Direct
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-earnings-apk-direct.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+      PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+    steps:
+      - name: Generate Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf app settings.gradle build.gradle Microsoft-Rapor-Earnings.apk
+          mkdir -p app/src/main/java/com/ilker/partnerreport app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'MicrosoftRapor'
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.7.3' apply false }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.ilker.partnerreport'
+              compileSdk 35
+              defaultConfig {
+                  applicationId 'com.ilker.partnerreport'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+                  buildConfigField 'String', 'CLIENT_ID', '"' + System.getenv('PARTNER_CENTER_CLIENT_ID') + '"'
+                  buildConfigField 'String', 'TENANT_ID', '"' + System.getenv('PARTNER_CENTER_TENANT_ID') + '"'
+              }
+              buildFeatures { buildConfig true }
+          }
+          EOF
+
+          cat > app/src/main/res/values/strings.xml <<'EOF'
+          <resources><string name="app_name">Microsoft Rapor</string></resources>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+            <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+              <item name="android:fontFamily">sans</item>
+              <item name="android:windowLightStatusBar">true</item>
+            </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <application android:theme="@style/AppTheme" android:label="Microsoft Rapor" android:allowBackup="false" android:usesCleartextTraffic="false">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".PollService" android:exported="false" android:foregroundServiceType="dataSync" />
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/ilker/partnerreport/CryptoStore.java <<'EOF'
+          package com.ilker.partnerreport;
+          import android.content.Context;
+          import android.security.keystore.KeyGenParameterSpec;
+          import android.security.keystore.KeyProperties;
+          import android.util.Base64;
+          import java.nio.charset.StandardCharsets;
+          import java.security.KeyStore;
+          import javax.crypto.Cipher;
+          import javax.crypto.KeyGenerator;
+          import javax.crypto.SecretKey;
+          import javax.crypto.spec.GCMParameterSpec;
+
+          public final class CryptoStore {
+              private static final String ALIAS="partner_report_key";
+              private final Context context;
+              public CryptoStore(Context c){context=c.getApplicationContext();}
+              private SecretKey key() throws Exception {
+                  KeyStore ks=KeyStore.getInstance("AndroidKeyStore"); ks.load(null);
+                  if(!ks.containsAlias(ALIAS)){
+                      KeyGenerator kg=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore");
+                      kg.init(new KeyGenParameterSpec.Builder(ALIAS,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT)
+                          .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());
+                      kg.generateKey();
+                  }
+                  return ((KeyStore.SecretKeyEntry)ks.getEntry(ALIAS,null)).getSecretKey();
+              }
+              public void put(String name,String value) throws Exception {
+                  Cipher c=Cipher.getInstance("AES/GCM/NoPadding"); c.init(Cipher.ENCRYPT_MODE,key());
+                  String iv=Base64.encodeToString(c.getIV(),Base64.NO_WRAP);
+                  String enc=Base64.encodeToString(c.doFinal(value.getBytes(StandardCharsets.UTF_8)),Base64.NO_WRAP);
+                  context.getSharedPreferences("secure",Context.MODE_PRIVATE).edit().putString(name,iv+":"+enc).apply();
+              }
+              public String get(String name) throws Exception {
+                  String s=context.getSharedPreferences("secure",Context.MODE_PRIVATE).getString(name,null); if(s==null)return null;
+                  String[] p=s.split(":",2); Cipher c=Cipher.getInstance("AES/GCM/NoPadding");
+                  c.init(Cipher.DECRYPT_MODE,key(),new GCMParameterSpec(128,Base64.decode(p[0],Base64.NO_WRAP)));
+                  return new String(c.doFinal(Base64.decode(p[1],Base64.NO_WRAP)),StandardCharsets.UTF_8);
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/com/ilker/partnerreport/PartnerApi.java <<'EOF'
+          package com.ilker.partnerreport;
+          import android.content.Context;
+          import org.json.JSONObject;
+          import java.io.*;
+          import java.net.*;
+          import java.nio.charset.StandardCharsets;
+          import java.time.LocalDate;
+
+          public final class PartnerApi {
+              private static final String SCOPE="https://api.partner.microsoft.com/user_impersonation offline_access openid profile";
+              private final CryptoStore store;
+              public PartnerApi(Context c){store=new CryptoStore(c);}
+              private static String enc(String s)throws Exception{return URLEncoder.encode(s,"UTF-8");}
+              private static String read(InputStream in)throws Exception{if(in==null)return"";BufferedReader r=new BufferedReader(new InputStreamReader(in,StandardCharsets.UTF_8));StringBuilder b=new StringBuilder();String x;while((x=r.readLine())!=null)b.append(x);return b.toString();}
+              private static JSONObject postForm(String url,String form)throws Exception{HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setRequestMethod("POST");c.setDoOutput(true);c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("Content-Type","application/x-www-form-urlencoded");try(OutputStream os=c.getOutputStream()){os.write(form.getBytes(StandardCharsets.UTF_8));}int code=c.getResponseCode();String body=read(code<400?c.getInputStream():c.getErrorStream());JSONObject j=new JSONObject(body.isEmpty()?"{}":body);j.put("_http",code);return j;}
+              public JSONObject startDeviceCode()throws Exception{return postForm("https://login.microsoftonline.com/"+BuildConfig.TENANT_ID+"/oauth2/v2.0/devicecode","client_id="+enc(BuildConfig.CLIENT_ID)+"&scope="+enc(SCOPE));}
+              public JSONObject pollDeviceToken(String deviceCode)throws Exception{JSONObject j=postForm("https://login.microsoftonline.com/"+BuildConfig.TENANT_ID+"/oauth2/v2.0/token","grant_type="+enc("urn:ietf:params:oauth:grant-type:device_code")+"&client_id="+enc(BuildConfig.CLIENT_ID)+"&device_code="+enc(deviceCode));if(j.optInt("_http")==200){store.put("access_token",j.getString("access_token"));if(j.has("refresh_token"))store.put("refresh_token",j.getString("refresh_token"));}return j;}
+              public String accessToken()throws Exception{String rt=store.get("refresh_token");if(rt==null)return store.get("access_token");JSONObject j=postForm("https://login.microsoftonline.com/"+BuildConfig.TENANT_ID+"/oauth2/v2.0/token","grant_type=refresh_token&client_id="+enc(BuildConfig.CLIENT_ID)+"&refresh_token="+enc(rt)+"&scope="+enc(SCOPE));if(j.optInt("_http")==200){store.put("access_token",j.getString("access_token"));if(j.has("refresh_token"))store.put("refresh_token",j.getString("refresh_token"));return j.getString("access_token");}throw new IOException(j.toString());}
+              public JSONObject earnings(LocalDate from,LocalDate to)throws Exception{String token=accessToken();if(token==null)throw new IllegalStateException("Giriş gerekli");String filter="earningForDate ge "+from+" and earningForDate le "+to;String u="https://api.partner.microsoft.com/v1.0/payouts/transactionhistory?$filter="+enc(filter)+"&fileformat=csv";HttpURLConnection c=(HttpURLConnection)new URL(u).openConnection();c.setRequestMethod("POST");c.setDoOutput(true);c.setFixedLengthStreamingMode(0);c.setConnectTimeout(15000);c.setReadTimeout(45000);c.setRequestProperty("Authorization","Bearer "+token);c.setRequestProperty("Accept","application/json");int code=c.getResponseCode();String body=read(code<400?c.getInputStream():c.getErrorStream());JSONObject out=new JSONObject(body.isEmpty()?"{}":body);out.put("_http",code);out.put("from",from.toString());out.put("to",to.toString());return out;}
+              public JSONObject today()throws Exception{return earnings(LocalDate.now(),LocalDate.now());}
+              public JSONObject month()throws Exception{LocalDate d=LocalDate.now();return earnings(d.withDayOfMonth(1),d);}
+          }
+          EOF
+
+          cat > app/src/main/java/com/ilker/partnerreport/PollService.java <<'EOF'
+          package com.ilker.partnerreport;
+          import android.app.*;
+          import android.content.*;
+          import android.os.IBinder;
+
+          public class PollService extends Service {
+              public static final String ACTION="com.ilker.partnerreport.UPDATED";
+              private volatile boolean running=true;
+              @Override public void onCreate(){super.onCreate();NotificationManager nm=getSystemService(NotificationManager.class);nm.createNotificationChannel(new NotificationChannel("poll","Microsoft Rapor",NotificationManager.IMPORTANCE_LOW));Notification n=new Notification.Builder(this,"poll").setContentTitle("Microsoft Rapor").setContentText("Earnings her 60 saniyede yenileniyor").setSmallIcon(android.R.drawable.stat_notify_sync).build();startForeground(11,n);new Thread(()->{PartnerApi api=new PartnerApi(this);while(running){try{String result=api.today().toString();getSharedPreferences("report",MODE_PRIVATE).edit().putString("last",result).apply();sendBroadcast(new Intent(ACTION).setPackage(getPackageName()).putExtra("report",result));}catch(Exception e){sendBroadcast(new Intent(ACTION).setPackage(getPackageName()).putExtra("error",e.getMessage()));}try{Thread.sleep(60000);}catch(InterruptedException ignored){}}}).start();}
+              @Override public int onStartCommand(Intent i,int f,int id){return START_STICKY;}
+              @Override public void onDestroy(){running=false;super.onDestroy();}
+              @Override public IBinder onBind(Intent i){return null;}
+          }
+          EOF
+
+          cat > app/src/main/java/com/ilker/partnerreport/MainActivity.java <<'EOF'
+          package com.ilker.partnerreport;
+          import android.Manifest;
+          import android.app.*;
+          import android.content.*;
+          import android.content.pm.PackageManager;
+          import android.graphics.Typeface;
+          import android.net.Uri;
+          import android.os.*;
+          import android.widget.*;
+          import org.json.JSONObject;
+
+          public class MainActivity extends Activity {
+              private TextView status,report; private final Handler h=new Handler(Looper.getMainLooper()); private BroadcastReceiver receiver;
+              @Override public void onCreate(Bundle b){super.onCreate(b);build();if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},7);showLast();receiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){String r=i.getStringExtra("report"),e=i.getStringExtra("error");if(r!=null)report.setText(r);if(e!=null)status.setText("Hata: "+e);}};IntentFilter f=new IntentFilter(PollService.ACTION);if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(receiver,f);}
+              private void build(){LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(44,54,44,44);TextView t=new TextView(this);t.setText("Microsoft Rapor");t.setTextSize(28);t.setTypeface(null,Typeface.BOLD);root.addView(t);status=new TextView(this);status.setText("Partner Center Earnings");status.setPadding(0,18,0,24);root.addView(status);Button login=new Button(this);login.setText("Microsoft ile giriş / MFA");root.addView(login);Button now=new Button(this);now.setText("Bugünü şimdi yenile");root.addView(now);Button month=new Button(this);month.setText("Bu ayı getir");root.addView(month);Button live=new Button(this);live.setText("1 dakikalık canlı modu başlat");root.addView(live);Button stop=new Button(this);stop.setText("Canlı modu durdur");root.addView(stop);report=new TextView(this);report.setTextSize(15);report.setTextIsSelectable(true);report.setPadding(0,28,0,0);root.addView(report);ScrollView s=new ScrollView(this);s.addView(root);setContentView(s);login.setOnClickListener(v->deviceLogin());now.setOnClickListener(v->load(false));month.setOnClickListener(v->load(true));live.setOnClickListener(v->{startForegroundService(new Intent(this,PollService.class));status.setText("Canlı mod aktif: 60 sn");});stop.setOnClickListener(v->{stopService(new Intent(this,PollService.class));status.setText("Canlı mod durdu");});}
+              private void deviceLogin(){new Thread(()->{try{PartnerApi api=new PartnerApi(this);JSONObject d=api.startDeviceCode();if(d.optInt("_http")!=200)throw new Exception(d.toString());String msg=d.getString("message"),uri=d.optString("verification_uri","https://microsoft.com/devicelogin"),dc=d.getString("device_code");int interval=d.optInt("interval",5);h.post(()->{status.setText(msg);startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(uri)));});while(true){Thread.sleep(interval*1000L);JSONObject tok=api.pollDeviceToken(dc);if(tok.optInt("_http")==200){h.post(()->status.setText("Giriş başarılı"));break;}String err=tok.optString("error");if(!"authorization_pending".equals(err)&&!"slow_down".equals(err))throw new Exception(tok.toString());if("slow_down".equals(err))interval+=5;}}catch(Exception e){h.post(()->status.setText("Giriş hatası: "+e.getMessage()));}}).start();}
+              private void load(boolean m){new Thread(()->{try{JSONObject j=m?new PartnerApi(this).month():new PartnerApi(this).today();h.post(()->{report.setText(j.toString());status.setText("HTTP "+j.optInt("_http"));});}catch(Exception e){h.post(()->status.setText("Hata: "+e.getMessage()));}}).start();}
+              private void showLast(){String s=getSharedPreferences("report",MODE_PRIVATE).getString("last","Henüz veri yok.");report.setText(s);}
+              @Override protected void onDestroy(){if(receiver!=null)unregisterReceiver(receiver);super.onDestroy();}
+          }
+          EOF
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER=$(find "$ANDROID_HOME" -type f -name sdkmanager -perm -111 2>/dev/null | head -n1 || true)
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
+          curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          /tmp/gradle-8.9/bin/gradle --no-daemon :app:assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk Microsoft-Rapor-Earnings.apk
+          ls -lh Microsoft-Rapor-Earnings.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Microsoft-Rapor-Earnings-APK
+          path: Microsoft-Rapor-Earnings.apk
+          if-no-files-found: error
+          retention-days: 7

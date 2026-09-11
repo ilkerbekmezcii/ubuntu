@@ -41,13 +41,13 @@ jobs:
         run: |
           set -euo pipefail
           gradle --no-daemon clean assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk ../Microsoft-Earnings-v1.1-debug.apk
-          sha256sum ../Microsoft-Earnings-v1.1-debug.apk
-          unzip -t ../Microsoft-Earnings-v1.1-debug.apk >/dev/null
+          cp app/build/outputs/apk/debug/app-debug.apk ../Microsoft-Earnings-v1.2-debug.apk
+          sha256sum ../Microsoft-Earnings-v1.2-debug.apk
+          unzip -t ../Microsoft-Earnings-v1.2-debug.apk >/dev/null
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Microsoft-Earnings-v1.1-APK
-          path: Microsoft-Earnings-v1.1-debug.apk
+          name: Microsoft-Earnings-v1.2-APK
+          path: Microsoft-Earnings-v1.2-debug.apk
           if-no-files-found: error
           retention-days: 7

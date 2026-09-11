@@ -56,6 +56,9 @@ jobs:
             await page.reload({waitUntil:'domcontentloaded',timeout:30000});
             await page.locator('#app:not(.hidden)').waitFor({state:'visible',timeout:15000});
           }
+          async function makePublic(){
+            await page.evaluate(async()=>req('/social',{method:'POST',body:JSON.stringify({action:'privacy',isPrivate:false})}));
+          }
           async function mutate(payload){
             return page.evaluate(async p=>req('/posts',{method:'POST',body:JSON.stringify(p)}),payload);
           }
@@ -74,11 +77,13 @@ jobs:
             const nestedText=`nested reply without forced tag ${stamp}`;
 
             await use(users[0]);
+            await makePublic();
             const rootResult=await mutate({action:'create',text:rootText,clientId:`e2e-root-${stamp}`});
             const root=(rootResult.posts||[]).find(p=>p.text===rootText);
             assert.ok(root?.id,'root post missing');
 
             await use(users[1]);
+            await makePublic();
             const firstResult=await mutate({action:'reply',id:Number(root.id),text:firstText,clientId:`e2e-first-${stamp}`});
             const rootAfterFirst=(firstResult.posts||[]).find(p=>Number(p.id)===Number(root.id));
             const first=(rootAfterFirst?.repliesData||[]).find(r=>r.text===firstText);
@@ -99,7 +104,7 @@ jobs:
             assert.equal(await page.locator('#replyModalText').inputValue(),'','reply composer should start empty');
             await page.locator('#replyModalText').fill(nestedText);
             await page.locator('#replyModalSend').click();
-            await page.locator('#replyModal.hidden').waitFor({state:'attached',timeout:10000}).catch(()=>{});
+            await page.locator('#replyModal:not(.hidden)').waitFor({state:'hidden',timeout:10000});
 
             const nestedCard=page.locator('.reply-card').filter({has:page.locator('.reply-text',{hasText:nestedText})}).first();
             await nestedCard.waitFor({state:'visible',timeout:10000});

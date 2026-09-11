@@ -144,10 +144,41 @@ jobs:
           echo "BUILD_OK repo=${{ steps.request.outputs.repo }} ref=${{ steps.request.outputs.ref }}"
           sha256sum "$APK" | sed 's#  .*#  app-debug.apk#'
 
+      - name: Check generated inline JavaScript
+        working-directory: /tmp/game-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/inline-js-check
+          mkdir -p /tmp/inline-js-check
+          COUNT="$(python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('app/src/main/assets/index.html')
+          if not path.exists():
+              print(0)
+              raise SystemExit(0)
+          text = path.read_text(encoding='utf-8')
+          scripts = re.findall(r'<script(?![^>]*\bsrc\s*=)[^>]*>(.*?)</script>', text, re.I | re.S)
+          out = Path('/tmp/inline-js-check')
+          for i, script in enumerate(scripts):
+              (out / f'inline-{i}.js').write_text(script, encoding='utf-8')
+          print(len(scripts))
+          PY
+          )"
+          for FILE in /tmp/inline-js-check/*.js; do
+            [ -e "$FILE" ] || continue
+            if ! node --check "$FILE" >/dev/null 2>&1; then
+              echo "INLINE_JS_SYNTAX_ERROR"
+              exit 1
+            fi
+          done
+          echo "INLINE_JS_SYNTAX_OK count=${COUNT}"
+
       - name: Remove private source from runner
         if: always()
         shell: bash
-        run: rm -rf /tmp/game-src /tmp/game-src.tar.gz /tmp/gradle-bin.zip /tmp/gradle-8.11.1
+        run: rm -rf /tmp/game-src /tmp/game-src.tar.gz /tmp/gradle-bin.zip /tmp/gradle-8.11.1 /tmp/inline-js-check
 
       - name: Report result
         if: always()

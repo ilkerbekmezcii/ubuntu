@@ -1,0 +1,46 @@
+name: Fix sdkmanager path once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-sdkmanager-once.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch APK workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/partner-center-earnings-live.yml')
+          s = p.read_text()
+          old = '''          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
+'''
+          new = '''          SDKMANAGER="${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}" -type f -name sdkmanager -perm -111 2>/dev/null | head -n1 || true)
+          fi
+          test -n "$SDKMANAGER"
+          echo "sdkmanager_path=$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
+'''
+          if old not in s:
+              raise SystemExit('sdkmanager block not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add .github/workflows/partner-center-earnings-live.yml
+          git commit -m 'Fix Android sdkmanager path on Ubuntu'
+          git push

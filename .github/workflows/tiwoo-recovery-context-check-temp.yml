@@ -1,0 +1,74 @@
+name: Tiwoo Recovery Context Check Temp
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tiwoo-recovery-context-check-temp.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch private Tiwoo files to ephemeral disk
+        shell: bash
+        env:
+          PAYLOAD_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-work-check-payload
+          PAYLOAD_AUD: tiwoo-work-check-v1
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.parse, urllib.request
+          base=os.environ['PAYLOAD_URL']
+          aud=os.environ['PAYLOAD_AUD']
+          oidc=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience='+urllib.parse.quote(aud)
+          req=urllib.request.Request(oidc,headers={'Authorization':'bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              token=json.load(r)['value']
+          names=['public/recovery-ui.js','scripts/work-preview-check.mjs','scripts/quality-hardening-check.mjs','scripts/auth-architecture-check.mjs']
+          root=pathlib.Path('/tmp/tiwoo-recovery-check')
+          for name in names:
+              url=base+'?file='+urllib.parse.quote(name)
+              req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token})
+              with urllib.request.urlopen(req,timeout=60) as r:data=r.read()
+              dest=root/name
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              dest.write_bytes(data)
+          print('PRIVATE_FILES_FETCHED='+str(len(names)))
+          PY
+
+      - name: Validate recovery syntax and contract
+        working-directory: /tmp/tiwoo-recovery-check
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check public/recovery-ui.js
+          node --check scripts/work-preview-check.mjs
+          node --check scripts/quality-hardening-check.mjs
+          node --check scripts/auth-architecture-check.mjs
+          node <<'NODE'
+          const fs=require('fs');
+          const s=fs.readFileSync('public/recovery-ui.js','utf8');
+          const need=(ok,msg)=>{if(!ok)throw new Error(msg)};
+          need(!s.includes('recoveryLookupInput'),'recovery modal still asks for username');
+          need(s.includes("sourceUsername(explicit='')")&&s.includes("q('tiwooUsername')?.value"),'login username context is not reused');
+          need(s.includes("method:'username'")&&s.includes('recoveryUsername=sourceUsername(username)'),'username recovery routing is missing');
+          need(s.includes("call('email_request',{purpose:'password_reset',...id})"),'registered email reset request is missing');
+          need(s.includes("window.__tiwooRecoveryVersion='2026-09-12-v8'"),'recovery runtime version is stale');
+          console.log('RECOVERY_CONTEXT_CHECK=PASS');
+          NODE
+
+      - name: Remove private files
+        if: always()
+        run: |
+          rm -rf /tmp/tiwoo-recovery-check
+          test ! -e /tmp/tiwoo-recovery-check

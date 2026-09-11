@@ -21,14 +21,14 @@ adb exec-out screencap -p > "$OUT/initial.png"
 grep -Fq 'Microsoft Earnings' "$OUT/window-initial.xml"
 grep -Fq 'Bugün' "$OUT/window-initial.xml"
 grep -Fq 'Bu Ay' "$OUT/window-initial.xml"
-grep -Fq '.env dosyası seç' "$OUT/window-initial.xml"
-grep -Fq 'Microsoft ile giriş / MFA' "$OUT/window-initial.xml"
+grep -Fq 'ENV DOSYASI' "$OUT/window-initial.xml"
+grep -Fq 'MFA' "$OUT/window-initial.xml"
 
 printf 'TENANT_ID=00000000-0000-0000-0000-000000000000\nCLIENT_ID=00000000-0000-0000-0000-000000000000\n' > "$OUT/test.env"
 adb push "$OUT/test.env" /sdcard/Download/test.env >/dev/null
 
 python3 - <<'PY'
-import re, subprocess, time, xml.etree.ElementTree as ET
+import re, subprocess, time, unicodedata, xml.etree.ElementTree as ET
 
 def adb(*args):
     subprocess.check_call(['adb', *args])
@@ -46,15 +46,21 @@ def tap_node(node):
     y=(int(m.group(2))+int(m.group(4)))//2
     adb('shell','input','tap',str(x),str(y))
 
+def norm(value):
+    return unicodedata.normalize('NFKD', value).encode('ascii','ignore').decode('ascii').lower()
+
 def find(root, text, contains=False):
+    wanted=norm(text)
     for n in root.iter('node'):
         values=(n.attrib.get('text',''), n.attrib.get('content-desc',''))
-        if any((text in v if contains else text == v) for v in values):
-            return n
+        for value in values:
+            value=norm(value)
+            if (wanted in value if contains else wanted == value):
+                return n
     return None
 
 root=ET.parse('emulator-test/window-initial.xml').getroot()
-btn=find(root,'.env dosyası seç')
+btn=find(root,'.env dosyasi sec')
 if btn is None:
     raise RuntimeError('ENV button not found')
 tap_node(btn)

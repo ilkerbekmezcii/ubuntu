@@ -23,18 +23,8 @@ jobs:
           from pathlib import Path
           p = Path('.github/workflows/partner-center-earnings-live.yml')
           s = p.read_text()
-          old = '''          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
-'''
-          new = '''          SDKMANAGER="${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}" -type f -name sdkmanager -perm -111 2>/dev/null | head -n1 || true)
-          fi
-          test -n "$SDKMANAGER"
-          echo "sdkmanager_path=$SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
-'''
+          old = "          yes | sdkmanager --licenses >/dev/null || true\n          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' >/dev/null\n"
+          new = "          SDKMANAGER=\"${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin/sdkmanager\"\n          if [ ! -x \"$SDKMANAGER\" ]; then\n            SDKMANAGER=$(find \"${ANDROID_HOME:-/usr/local/lib/android/sdk}\" -type f -name sdkmanager -perm -111 2>/dev/null | head -n1 || true)\n          fi\n          test -n \"$SDKMANAGER\"\n          echo \"sdkmanager_path=$SDKMANAGER\"\n          yes | \"$SDKMANAGER\" --licenses >/dev/null || true\n          \"$SDKMANAGER\" 'platforms;android-35' 'build-tools;35.0.0' >/dev/null\n"
           if old not in s:
               raise SystemExit('sdkmanager block not found')
           p.write_text(s.replace(old, new, 1))

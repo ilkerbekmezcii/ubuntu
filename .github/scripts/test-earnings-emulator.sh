@@ -49,10 +49,12 @@ def tap_node(node):
 def norm(value):
     return unicodedata.normalize('NFKD', value).encode('ascii','ignore').decode('ascii').lower()
 
-def find(root, text, contains=False):
+def find(root, text, contains=False, field='either'):
     wanted=norm(text)
     for n in root.iter('node'):
-        values=(n.attrib.get('text',''), n.attrib.get('content-desc',''))
+        values=[]
+        if field in ('either','text'): values.append(n.attrib.get('text',''))
+        if field in ('either','desc'): values.append(n.attrib.get('content-desc',''))
         for value in values:
             value=norm(value)
             if (wanted in value if contains else wanted == value):
@@ -67,32 +69,40 @@ tap_node(btn)
 time.sleep(2)
 
 root=dump('/sdcard/picker.xml','emulator-test/picker.xml')
-file_node=find(root,'test.env',contains=True)
+file_node=find(root,'test.env',field='text')
 if file_node is None:
-    roots=find(root,'Show roots')
+    roots=find(root,'Show roots',field='desc')
     if roots is None:
         raise RuntimeError('DocumentsUI roots button not found')
     tap_node(roots)
     time.sleep(1)
     root=dump('/sdcard/roots.xml','emulator-test/roots.xml')
-    downloads=find(root,'Downloads')
+    downloads=find(root,'Downloads',field='text')
     if downloads is None:
         raise RuntimeError('Downloads root not found')
     tap_node(downloads)
     time.sleep(2)
     root=dump('/sdcard/downloads.xml','emulator-test/downloads.xml')
-    file_node=find(root,'test.env',contains=True)
+    file_node=find(root,'test.env',field='text')
 if file_node is None:
     raise RuntimeError('test.env not found in Downloads')
 tap_node(file_node)
 PY
 
-sleep 2
-adb shell am force-stop "$PKG" || true
-adb shell run-as "$PKG" cat shared_prefs/auth_store.xml > "$OUT/auth_store.xml"
+sleep 4
+adb shell dumpsys window windows | grep -E 'mCurrentFocus|mFocusedApp' > "$OUT/focus-after-select.txt" || true
+adb shell uiautomator dump /sdcard/window-after-select.xml >/dev/null || true
+adb pull /sdcard/window-after-select.xml "$OUT/window-after-select.xml" >/dev/null || true
+adb exec-out screencap -p > "$OUT/after-select.png" || true
+adb shell run-as "$PKG" sh -c 'pwd; find . -maxdepth 3 -type f -print' > "$OUT/app-files.txt" || true
+
+DATA_DIR=$(adb shell run-as "$PKG" pwd | tr -d '\r')
+PREF="$DATA_DIR/shared_prefs/auth_store.xml"
+adb shell run-as "$PKG" cat "$PREF" > "$OUT/auth_store.xml"
 grep -Fq 'name="tenant_id"' "$OUT/auth_store.xml"
 grep -Fq 'name="client_id"' "$OUT/auth_store.xml"
 
+adb shell am force-stop "$PKG" || true
 adb shell am start -W -n "$PKG/$ACT" >/dev/null
 sleep 2
 adb shell uiautomator dump /sdcard/window-after-env.xml >/dev/null

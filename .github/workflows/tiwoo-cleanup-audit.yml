@@ -1,0 +1,31 @@
+name: Tiwoo Cleanup Audit
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tiwoo-cleanup-audit.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Clone Tiwoo work branch
+        run: git clone --depth 1 --branch work https://github.com/ilkerbekmezcii/tiwoo.git /tmp/tiwoo
+      - name: Audit dead aliases and AI hard-coded behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/tiwoo
+          echo '=== RUNTIME LEGACY HANDLES ==='
+          grep -RInE '@kata|@tiwoo|@lina_ai' api public scripts supabase/functions package.json vercel.json 2>/dev/null || true
+          echo '=== AI ACTOR-SPECIFIC / ADMIN RULES ==='
+          grep -RInE 'ADMIN_HANDLE|adminRule|canonicalBotHandle|canonicalHandle|canonicalPlatformHandle|aliases =|const aliases|handle === "@lina"|handle==="@lina"|Özellikle Luna|özellikle Luna' supabase/functions public scripts 2>/dev/null || true
+          echo '=== RETIRED / ONE-OFF SOURCE ==='
+          find supabase/functions -maxdepth 2 -type f -name 'index.ts' | grep -E '(once|probe|worktest)' | sort || true
+          echo '=== DISABLED 410 SOURCE ==='
+          grep -RIl 'disabled: true' supabase/functions 2>/dev/null | sort || true

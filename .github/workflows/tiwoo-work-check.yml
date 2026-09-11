@@ -47,9 +47,9 @@ jobs:
           print('PAYLOAD_FILES='+str(len(files)))
           PY
 
-      - name: Run AI person-context regression check
+      - name: Run legacy handle boundary regression check
         working-directory: /tmp/tiwoo-work-check
-        run: node scripts/ai-person-context-check.mjs
+        run: node scripts/legacy-handle-boundary-check.mjs
 
       - name: Remove private payload from runner
         if: always()

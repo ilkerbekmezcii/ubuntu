@@ -186,7 +186,7 @@ sleep 2
 adb shell uiautomator dump /sdcard/window-callback.xml >/dev/null
 adb pull /sdcard/window-callback.xml "$OUT/window-callback.xml" >/dev/null
 adb exec-out screencap -p > "$OUT/after-callback.png"
-grep -Fq 'Microsoft giriş hatası: smoke-test' "$OUT/window-callback.xml"
+grep -Fq 'Microsoft giriş hatası: access_denied' "$OUT/window-callback.xml"
 
 adb logcat -d > "$OUT/logcat.txt"
 if grep -Fq 'FATAL EXCEPTION' "$OUT/logcat.txt"; then

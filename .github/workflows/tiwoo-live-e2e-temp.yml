@@ -1,0 +1,108 @@
+name: Tiwoo Live E2E Temp
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/tiwoo-live-e2e-temp.yml']
+permissions:
+  contents: read
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Playwright
+        run: |
+          cd /tmp
+          npm init -y >/dev/null
+          npm install playwright@1.55.0 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+      - name: Run Tiwoo live regression audit
+        working-directory: /tmp
+        run: |
+          cat > e2e.mjs <<'EOF'
+          import {chromium,devices} from 'playwright';
+          import {randomUUID} from 'node:crypto';
+          const base='https://tiwoo.vercel.app';
+          const report={checks:{},issues:[],consoleErrors:[],pageErrors:[]};
+          const browser=await chromium.launch({headless:true});
+          const context=await browser.newContext({viewport:{width:1440,height:1000},permissions:['clipboard-read','clipboard-write']});
+          const page=await context.newPage();
+          page.on('console',m=>{if(m.type()==='error')report.consoleErrors.push(m.text())});
+          page.on('pageerror',e=>report.pageErrors.push(String(e?.message||e)));
+          const username=`e2e_${Date.now().toString(36).slice(-8)}`;
+          const password=`T!${randomUUID().replaceAll('-','').slice(0,20)}a9`;
+          let token='';
+          const check=(name,ok,detail='')=>{report.checks[name]={ok:!!ok,detail};if(!ok)report.issues.push(name+(detail?':'+detail:''))};
+          try{
+            await page.goto(base,{waitUntil:'domcontentloaded',timeout:30000});await page.waitForTimeout(1800);
+            const reg=await page.request.post(`${base}/api/tiwoo-auth`,{data:{action:'register',username,password,name:'Tiwoo E2E'}});
+            const payload=await reg.json().catch(()=>({}));
+            check('register',reg.ok()&&!!payload?.session?.accessToken,`http_${reg.status()}`);
+            if(!payload?.session?.accessToken)throw Error('register_failed');
+            token=payload.session.accessToken;
+            const set=await page.evaluate(async s=>{const c=window.TiwooSupabase?.sb;if(!c)return false;const {data,error}=await c.auth.setSession({access_token:s.access,refresh_token:s.refresh});return !error&&!!data?.session},{access:token,refresh:payload.session.refreshToken});
+            check('session_set',set);
+            await page.reload({waitUntil:'domcontentloaded',timeout:30000});await page.waitForTimeout(2500);
+            check('app_visible',await page.locator('#app:not(.hidden)').count()===1);
+            const navText=await page.locator('#nav').innerText().catch(()=> '');
+            check('explore_removed',!/^Keşfet$/mi.test(navText),navText.replace(/\n/g,'|'));
+            for(const label of ['Ana Sayfa','Bildirimler','Arkadaşlar','Yer İşaretleri','Profil','Ayarlar']){
+              const b=page.getByRole('button',{name:label,exact:true}).first();
+              check('nav_'+label.replace(/\s+/g,'_'),await b.isVisible().catch(()=>false));
+            }
+            // Search must remain functional even without Explore.
+            const topSearch=page.locator('#topSearch');
+            check('top_search_visible',await topSearch.isVisible().catch(()=>false));
+            if(await topSearch.isVisible().catch(()=>false)){
+              await topSearch.click();await page.waitForTimeout(250);
+              const search=page.locator('#search');
+              await search.fill(username);await page.waitForTimeout(450);
+              const body=await page.locator('#view').innerText().catch(()=> '');
+              check('search_results_work',body.toLowerCase().includes(username.toLowerCase()),body.slice(0,160).replace(/\n/g,'|'));
+            }
+            // Home/create post.
+            const home=page.getByRole('button',{name:'Ana Sayfa',exact:true}).first();if(await home.isVisible().catch(()=>false)){await home.click();await page.waitForTimeout(250)}
+            const inline=page.locator('#inlineText');
+            check('composer_visible',await inline.isVisible().catch(()=>false));
+            const marker='e2e-'+Date.now();
+            if(await inline.isVisible().catch(()=>false)){
+              await inline.fill(marker);await page.locator('#inlineSend').click();await page.waitForTimeout(700);
+              check('post_create',await page.getByText(marker,{exact:true}).count()>0);
+            }
+            const card=page.locator('[data-post]').filter({hasText:marker}).first();
+            check('post_card_found',await card.count()===1);
+            if(await card.count()){
+              const like=card.locator('[data-act="like"]');await like.click();await page.waitForTimeout(300);check('like',await like.evaluate(el=>el.classList.contains('on')).catch(()=>false));await like.click();await page.waitForTimeout(250);check('unlike',!(await like.evaluate(el=>el.classList.contains('on')).catch(()=>true)));
+              const repost=card.locator('[data-act="repost"]');await repost.click();await page.waitForTimeout(300);check('repost',await repost.evaluate(el=>el.classList.contains('on')).catch(()=>false));await repost.click();await page.waitForTimeout(250);check('unrepost',!(await repost.evaluate(el=>el.classList.contains('on')).catch(()=>true)));
+              const bookmark=card.locator('[data-act="bookmark"]');await bookmark.click();await page.waitForTimeout(300);check('bookmark',await bookmark.evaluate(el=>el.classList.contains('on')).catch(()=>false));await bookmark.click();await page.waitForTimeout(250);check('unbookmark',!(await bookmark.evaluate(el=>el.classList.contains('on')).catch(()=>true)));
+              const del=card.locator('[data-delete]');check('delete_is_trash_only',await del.count()===1&&await del.locator('svg.ui-icon').count()===1&&!(await del.innerText()).trim());
+              page.once('dialog',d=>d.accept());await del.click();await page.waitForTimeout(500);check('post_delete',await page.getByText(marker,{exact:true}).count()===0);
+            }
+            // Core views render without exceptions.
+            for(const [label,needle] of [['Bildirimler','Bildirim'],['Arkadaşlar','Arkadaş'],['Yer İşaretleri','KAYDEDİLENLER'],['Profil','Gönderiler'],['Ayarlar','HESAP']]){
+              const b=page.getByRole('button',{name:label,exact:true}).first();if(await b.isVisible().catch(()=>false)){await b.click();await page.waitForTimeout(300);const txt=await page.locator('#view').innerText().catch(()=> '');check('view_'+label.replace(/\s+/g,'_'),txt.toLocaleLowerCase('tr-TR').includes(needle.toLocaleLowerCase('tr-TR')),txt.slice(0,120).replace(/\n/g,'|'))}
+            }
+            // Mobile navigation and search.
+            const mobile=await browser.newContext({...devices['Pixel 7'],permissions:['clipboard-read','clipboard-write']});
+            const mp=await mobile.newPage();await mp.goto(base,{waitUntil:'domcontentloaded',timeout:30000});
+            await mp.evaluate(async s=>{const c=window.TiwooSupabase?.sb;if(!c)return false;const {data,error}=await c.auth.setSession({access_token:s.access,refresh_token:s.refresh});return !error&&!!data?.session},{access:payload.session.accessToken,refresh:payload.session.refreshToken});
+            await mp.reload({waitUntil:'domcontentloaded',timeout:30000});await mp.waitForTimeout(2200);
+            const mobileLabels=await mp.locator('#mobileNav').innerText().catch(()=> '');check('mobile_explore_removed',!mobileLabels.includes('Keşfet'),mobileLabels.replace(/\n/g,'|'));
+            check('mobile_nav_visible',await mp.locator('#mobileNav:not(.hidden)').count()===1);
+            const msearch=mp.locator('#mobileSearch');if(await msearch.isVisible().catch(()=>false)){await msearch.click();await mp.waitForTimeout(250);const input=mp.locator('#mobileSearchBox');if(await input.count()){await input.fill(username);await mp.waitForTimeout(400);const txt=await mp.locator('#view').innerText().catch(()=> '');check('mobile_search_results_work',txt.toLowerCase().includes(username.toLowerCase()),txt.slice(0,120).replace(/\n/g,'|'))}else check('mobile_search_results_work',false,'search_box_missing')}
+            await mobile.close();
+          }catch(e){report.issues.push('fatal:'+String(e?.message||e))}
+          finally{
+            if(token){const del=await page.request.post(`${base}/api/tiwoo-auth`,{headers:{authorization:`Bearer ${token}`},data:{action:'account_delete',confirmation:username,acknowledged:true}}).catch(()=>null);report.cleanup=del?{status:del.status(),ok:del.ok()}:{status:0,ok:false}}
+            await context.close();await browser.close();
+          }
+          console.log('TIWOO_E2E_REPORT='+JSON.stringify(report));
+          if(report.issues.length||report.pageErrors.length)process.exitCode=1;
+          EOF
+          node e2e.mjs
+      - name: Cleanup temp test file
+        if: always()
+        run: rm -f /tmp/e2e.mjs

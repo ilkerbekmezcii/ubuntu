@@ -1,4 +1,4 @@
-name: Partner Center Earnings via Direct Device OAuth
+name: Build Standalone Partner Center Earnings APK
 
 on:
   push:
@@ -11,117 +11,207 @@ permissions:
   contents: read
 
 jobs:
-  earnings:
+  build-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
+      PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
       PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
       TZ: Europe/Istanbul
-      AZURE_CLI_PUBLIC_CLIENT_ID: 04b07795-8ddb-461a-bbee-02f9e1bf7b46
     steps:
-      - name: Start Partner Center device authorization and poll
+      - name: Enable public client flow
         shell: bash
         run: |
           set -euo pipefail
-          DEVICE=$(mktemp)
-          curl -sS -f \
-            -X POST "https://login.microsoftonline.com/${PARTNER_CENTER_TENANT_ID}/oauth2/v2.0/devicecode" \
-            -H 'Content-Type: application/x-www-form-urlencoded' \
-            --data-urlencode "client_id=${AZURE_CLI_PUBLIC_CLIENT_ID}" \
-            --data-urlencode 'scope=https://api.partner.microsoft.com/.default offline_access openid profile' \
-            -o "$DEVICE"
+          az login --tenant "$PARTNER_CENTER_TENANT_ID" --use-device-code --allow-no-subscriptions >/tmp/az-login.json
+          APP_OBJECT_ID=$(az ad app show --id "$PARTNER_CENTER_CLIENT_ID" --query id -o tsv)
+          test -n "$APP_OBJECT_ID"
+          az rest --method PATCH \
+            --url "https://graph.microsoft.com/v1.0/applications/${APP_OBJECT_ID}" \
+            --headers 'Content-Type=application/json' \
+            --body '{"isFallbackPublicClient":true}'
+          echo "public_client_enabled=true"
 
-          VERIFY=$(jq -r '.verification_uri' "$DEVICE")
-          USER_CODE=$(jq -r '.user_code' "$DEVICE")
-          DEVICE_CODE=$(jq -r '.device_code' "$DEVICE")
-          INTERVAL=$(jq -r '.interval // 5' "$DEVICE")
-          EXPIRES=$(jq -r '.expires_in // 900' "$DEVICE")
-
-          echo "verification_uri=$VERIFY"
-          echo "user_code=$USER_CODE"
-          echo "polling_for_up_to=${EXPIRES}s"
-
-          START=$(date +%s)
-          TOKEN_BODY=$(mktemp)
-          while true; do
-            NOW=$(date +%s)
-            if [ $((NOW-START)) -ge "$EXPIRES" ]; then
-              echo 'device_code_expired'
-              exit 1
-            fi
-
-            HTTP=$(curl -sS -o "$TOKEN_BODY" -w '%{http_code}' \
-              -X POST "https://login.microsoftonline.com/${PARTNER_CENTER_TENANT_ID}/oauth2/v2.0/token" \
-              -H 'Content-Type: application/x-www-form-urlencoded' \
-              --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
-              --data-urlencode "client_id=${AZURE_CLI_PUBLIC_CLIENT_ID}" \
-              --data-urlencode "device_code=${DEVICE_CODE}")
-
-            if [ "$HTTP" = "200" ]; then
-              ACCESS_TOKEN=$(jq -r '.access_token' "$TOKEN_BODY")
-              REFRESH_TOKEN=$(jq -r '.refresh_token // empty' "$TOKEN_BODY")
-              test -n "$ACCESS_TOKEN"
-              echo "::add-mask::$ACCESS_TOKEN"
-              [ -z "$REFRESH_TOKEN" ] || echo "::add-mask::$REFRESH_TOKEN"
-              printf '%s' "$ACCESS_TOKEN" > "$RUNNER_TEMP/partner_user_token"
-              echo "access_token_received=true"
-              echo "refresh_token_received=$([ -n "$REFRESH_TOKEN" ] && echo true || echo false)"
-              break
-            fi
-
-            ERROR=$(jq -r '.error // empty' "$TOKEN_BODY")
-            case "$ERROR" in
-              authorization_pending)
-                sleep "$INTERVAL"
-                ;;
-              slow_down)
-                INTERVAL=$((INTERVAL+5))
-                sleep "$INTERVAL"
-                ;;
-              *)
-                echo "device_oauth_error=$ERROR"
-                jq -c '{error,error_description}' "$TOKEN_BODY"
-                exit 1
-                ;;
-            esac
-          done
-
-      - name: Verify Partner Center token claims
+      - name: Generate Android project
         shell: bash
         run: |
           set -euo pipefail
-          TOKEN=$(cat "$RUNNER_TEMP/partner_user_token")
-          PAYLOAD=$(printf '%s' "$TOKEN" | cut -d. -f2 | tr '_-' '/+' | awk '{l=length($0)%4;if(l==2)$0=$0"==";else if(l==3)$0=$0"=";print}' | base64 -d 2>/dev/null || true)
-          echo "token_aud=$(printf '%s' "$PAYLOAD" | jq -r '.aud // empty')"
-          echo "token_has_oid=$(printf '%s' "$PAYLOAD" | jq 'has("oid")')"
-          echo "token_has_user_claim=$(printf '%s' "$PAYLOAD" | jq 'has("upn") or has("preferred_username") or has("unique_name")')"
+          rm -rf earnings-apk
+          mkdir -p earnings-apk/app/src/main/java/com/ilker/earnings
 
-      - name: Call Earnings API
+          cat > earnings-apk/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'PartnerEarnings'
+          include ':app'
+          EOF
+
+          cat > earnings-apk/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          EOF
+
+          cat > earnings-apk/app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+
+          android {
+              namespace 'com.ilker.earnings'
+              compileSdk 35
+              defaultConfig {
+                  applicationId 'com.ilker.earnings'
+                  minSdk 26
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+                  buildConfigField 'String', 'CLIENT_ID', '"' + System.getenv('PARTNER_CENTER_CLIENT_ID') + '"'
+                  buildConfigField 'String', 'TENANT_ID', '"' + System.getenv('PARTNER_CENTER_TENANT_ID') + '"'
+              }
+              buildFeatures { buildConfig true }
+          }
+          EOF
+
+          cat > earnings-apk/app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <application android:allowBackup="false" android:label="Microsoft Earnings" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+                  <service android:name=".PollingService" android:exported="false" android:foregroundServiceType="dataSync"/>
+              </application>
+          </manifest>
+          EOF
+
+          cat > earnings-apk/app/src/main/java/com/ilker/earnings/SecureTokenStore.java <<'EOF'
+          package com.ilker.earnings;
+          import android.content.*;
+          import android.security.keystore.*;
+          import android.util.Base64;
+          import java.nio.charset.StandardCharsets;
+          import java.security.KeyStore;
+          import javax.crypto.*;
+          import javax.crypto.spec.GCMParameterSpec;
+
+          public final class SecureTokenStore {
+              private static final String ALIAS="partner_earnings_refresh", PREF="secure_auth";
+              private static SecretKey key() throws Exception {
+                  KeyStore ks=KeyStore.getInstance("AndroidKeyStore"); ks.load(null);
+                  if(!ks.containsAlias(ALIAS)){
+                      KeyGenerator kg=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore");
+                      kg.init(new KeyGenParameterSpec.Builder(ALIAS,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT)
+                              .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());
+                      kg.generateKey();
+                  }
+                  return (SecretKey)ks.getKey(ALIAS,null);
+              }
+              public static void save(Context c,String token)throws Exception{
+                  Cipher x=Cipher.getInstance("AES/GCM/NoPadding"); x.init(Cipher.ENCRYPT_MODE,key());
+                  byte[] enc=x.doFinal(token.getBytes(StandardCharsets.UTF_8));
+                  c.getSharedPreferences(PREF,Context.MODE_PRIVATE).edit()
+                          .putString("iv",Base64.encodeToString(x.getIV(),Base64.NO_WRAP))
+                          .putString("data",Base64.encodeToString(enc,Base64.NO_WRAP)).apply();
+              }
+              public static String load(Context c){try{
+                  SharedPreferences p=c.getSharedPreferences(PREF,Context.MODE_PRIVATE);
+                  String iv=p.getString("iv",null),data=p.getString("data",null); if(iv==null||data==null)return null;
+                  Cipher x=Cipher.getInstance("AES/GCM/NoPadding");
+                  x.init(Cipher.DECRYPT_MODE,key(),new GCMParameterSpec(128,Base64.decode(iv,Base64.NO_WRAP)));
+                  return new String(x.doFinal(Base64.decode(data,Base64.NO_WRAP)),StandardCharsets.UTF_8);
+              }catch(Exception e){return null;}}
+          }
+          EOF
+
+          cat > earnings-apk/app/src/main/java/com/ilker/earnings/PartnerApi.java <<'EOF'
+          package com.ilker.earnings;
+          import android.content.Context;
+          import org.json.JSONObject;
+          import java.io.*;
+          import java.net.*;
+          import java.nio.charset.StandardCharsets;
+          import java.text.SimpleDateFormat;
+          import java.util.*;
+
+          public final class PartnerApi {
+              private static final String SCOPE="https://api.partner.microsoft.com/user_impersonation offline_access openid profile";
+              private static String form(Map<String,String> m)throws Exception{StringBuilder b=new StringBuilder();for(Map.Entry<String,String>e:m.entrySet()){if(b.length()>0)b.append('&');b.append(URLEncoder.encode(e.getKey(),"UTF-8")).append('=').append(URLEncoder.encode(e.getValue(),"UTF-8"));}return b.toString();}
+              private static String read(InputStream is)throws Exception{if(is==null)return"";BufferedReader r=new BufferedReader(new InputStreamReader(is,StandardCharsets.UTF_8));StringBuilder b=new StringBuilder();String s;while((s=r.readLine())!=null)b.append(s);return b.toString();}
+              private static JSONObject postForm(String url,Map<String,String>m)throws Exception{byte[]body=form(m).getBytes(StandardCharsets.UTF_8);HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection();c.setRequestMethod("POST");c.setDoOutput(true);c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("Content-Type","application/x-www-form-urlencoded");try(OutputStream os=c.getOutputStream()){os.write(body);}int h=c.getResponseCode();String t=read(h>=400?c.getErrorStream():c.getInputStream());JSONObject j=new JSONObject(t.isEmpty()?"{}":t);j.put("_http",h);return j;}
+              public static JSONObject beginDeviceCode()throws Exception{Map<String,String>m=new LinkedHashMap<>();m.put("client_id",BuildConfig.CLIENT_ID);m.put("scope",SCOPE);return postForm("https://login.microsoftonline.com/"+BuildConfig.TENANT_ID+"/oauth2/v2.0/devicecode",m);}
+              public static JSONObject pollDeviceCode(String dc)throws Exception{Map<String,String>m=new LinkedHashMap<>();m.put("grant_type","urn:ietf:params:oauth:grant-type:device_code");m.put("client_id",BuildConfig.CLIENT_ID);m.put("device_code",dc);return postForm("https://login.microsoftonline.com/"+BuildConfig.TENANT_ID+"/oauth2/v2.0/token",m);}
+              public static String refreshAccessToken(Context ctx)throws Exception{String rt=SecureTokenStore.load(ctx);if(rt==null)throw new IllegalStateException("Giriş gerekli");Map<String,String>m=new LinkedHashMap<>();m.put("grant_type","refresh_token");m.put("client_id",BuildConfig.CLIENT_ID);m.put("refresh_token",rt);m.put("scope",SCOPE);JSONObject j=postForm("https://login.microsoftonline.com/"+BuildConfig.TENANT_ID+"/oauth2/v2.0/token",m);if(j.optInt("_http")!=200)throw new IOException(j.toString());if(j.has("refresh_token"))SecureTokenStore.save(ctx,j.getString("refresh_token"));return j.getString("access_token");}
+              public static JSONObject earningsToday(Context ctx)throws Exception{String token=refreshAccessToken(ctx);String day=new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(new Date());String filter="earningForDate ge "+day+" and earningForDate le "+day;String u="https://api.partner.microsoft.com/v1.0/payouts/transactionhistory?$filter="+URLEncoder.encode(filter,"UTF-8")+"&fileformat=csv";HttpURLConnection c=(HttpURLConnection)new URL(u).openConnection();c.setRequestMethod("POST");c.setDoOutput(true);c.setFixedLengthStreamingMode(0);c.setConnectTimeout(15000);c.setReadTimeout(30000);c.setRequestProperty("Authorization","Bearer "+token);c.setRequestProperty("Accept","application/json");c.connect();int h=c.getResponseCode();String t=read(h>=400?c.getErrorStream():c.getInputStream());JSONObject j=new JSONObject(t.isEmpty()?"{}":t);j.put("_http",h);j.put("date",day);return j;}
+          }
+          EOF
+
+          cat > earnings-apk/app/src/main/java/com/ilker/earnings/PollingService.java <<'EOF'
+          package com.ilker.earnings;
+          import android.app.*;
+          import android.content.*;
+          import android.os.IBinder;
+          import org.json.JSONObject;
+          import java.util.concurrent.*;
+
+          public class PollingService extends Service {
+              public static final String ACTION="com.ilker.earnings.UPDATE";
+              private final ScheduledExecutorService scheduler=Executors.newSingleThreadScheduledExecutor();
+              @Override public void onCreate(){super.onCreate();NotificationManager nm=getSystemService(NotificationManager.class);nm.createNotificationChannel(new NotificationChannel("earnings","Earnings canlı takip",NotificationManager.IMPORTANCE_LOW));Notification n=new Notification.Builder(this,"earnings").setContentTitle("Microsoft Earnings").setContentText("Her 60 saniyede güncelleniyor").setSmallIcon(android.R.drawable.stat_notify_sync).build();startForeground(11,n);scheduler.scheduleAtFixedRate(this::poll,0,60,TimeUnit.SECONDS);}
+              private void poll(){try{JSONObject j=PartnerApi.earningsToday(this);getSharedPreferences("report",MODE_PRIVATE).edit().putString("last",j.toString()).apply();sendBroadcast(new Intent(ACTION).setPackage(getPackageName()).putExtra("report",j.toString()));}catch(Exception e){sendBroadcast(new Intent(ACTION).setPackage(getPackageName()).putExtra("error",e.getMessage()));}}
+              @Override public void onDestroy(){scheduler.shutdownNow();super.onDestroy();}
+              @Override public IBinder onBind(Intent i){return null;}
+          }
+          EOF
+
+          cat > earnings-apk/app/src/main/java/com/ilker/earnings/MainActivity.java <<'EOF'
+          package com.ilker.earnings;
+          import android.app.*;
+          import android.content.*;
+          import android.net.Uri;
+          import android.os.*;
+          import android.widget.*;
+          import org.json.JSONObject;
+          import java.text.SimpleDateFormat;
+          import java.util.*;
+          import java.util.concurrent.*;
+
+          public class MainActivity extends Activity {
+              TextView status,code,report; ExecutorService io=Executors.newSingleThreadExecutor(); BroadcastReceiver receiver;
+              @Override protected void onCreate(Bundle b){super.onCreate(b);if(Build.VERSION.SDK_INT>=33)requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"},10);LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(36,36,36,36);TextView title=new TextView(this);title.setText("Microsoft Partner Earnings");title.setTextSize(26);root.addView(title);status=new TextView(this);status.setText("Hazır");status.setTextSize(18);root.addView(status);code=new TextView(this);code.setTextSize(22);code.setPadding(0,24,0,24);root.addView(code);Button login=new Button(this);login.setText("Microsoft ile giriş yap");root.addView(login);Button start=new Button(this);start.setText("60 sn canlı takibi başlat");root.addView(start);Button stop=new Button(this);stop.setText("Takibi durdur");root.addView(stop);report=new TextView(this);report.setTextSize(16);report.setTextIsSelectable(true);root.addView(report);ScrollView sv=new ScrollView(this);sv.addView(root);setContentView(sv);login.setOnClickListener(v->beginLogin());start.setOnClickListener(v->{Intent i=new Intent(this,PollingService.class);if(Build.VERSION.SDK_INT>=26)startForegroundService(i);else startService(i);});stop.setOnClickListener(v->stopService(new Intent(this,PollingService.class)));String last=getSharedPreferences("report",MODE_PRIVATE).getString("last",null);if(last!=null)showReport(last);if(SecureTokenStore.load(this)!=null)status.setText("Oturum kayıtlı");receiver=new BroadcastReceiver(){@Override public void onReceive(Context c,Intent i){String r=i.getStringExtra("report"),e=i.getStringExtra("error");if(r!=null)showReport(r);else if(e!=null)status.setText("Hata: "+e);}};IntentFilter f=new IntentFilter(PollingService.ACTION);if(Build.VERSION.SDK_INT>=33)registerReceiver(receiver,f,Context.RECEIVER_NOT_EXPORTED);else registerReceiver(receiver,f);}
+              void beginLogin(){status.setText("Microsoft giriş kodu alınıyor...");io.execute(()->{try{JSONObject d=PartnerApi.beginDeviceCode();if(d.optInt("_http")!=200)throw new Exception(d.toString());String uc=d.getString("user_code"),dc=d.getString("device_code"),uri=d.optString("verification_uri","https://microsoft.com/devicelogin");int interval=Math.max(5,d.optInt("interval",5));runOnUiThread(()->{code.setText("Kod: "+uc);status.setText("Tarayıcıda kodu girip MFA'yı tamamlayın");startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(uri)));});while(!Thread.currentThread().isInterrupted()){Thread.sleep(interval*1000L);JSONObject t=PartnerApi.pollDeviceCode(dc);if(t.optInt("_http")==200){SecureTokenStore.save(this,t.getString("refresh_token"));runOnUiThread(()->{status.setText("Giriş başarılı");code.setText("");});return;}String err=t.optString("error");if(!"authorization_pending".equals(err)&&!"slow_down".equals(err))throw new Exception(t.toString());if("slow_down".equals(err))interval+=5;}}catch(Exception e){runOnUiThread(()->status.setText("Giriş hatası: "+e.getMessage()));}});}
+              void showReport(String raw){try{JSONObject j=new JSONObject(raw);report.setText("Tarih: "+j.optString("date")+"\nHTTP: "+j.optInt("_http")+"\nKayıt sayısı: "+j.optInt("totalCount",-1)+"\n\n"+j.toString(2));status.setText("Son güncelleme: "+new SimpleDateFormat("HH:mm:ss",Locale.getDefault()).format(new Date()));}catch(Exception e){report.setText(raw);}}
+              @Override protected void onDestroy(){if(receiver!=null)unregisterReceiver(receiver);io.shutdownNow();super.onDestroy();}
+          }
+          EOF
+
+      - name: Build APK
         shell: bash
         run: |
           set -euo pipefail
-          TOKEN=$(cat "$RUNNER_TEMP/partner_user_token")
-          TODAY=$(TZ=Europe/Istanbul date +%F)
-          FILTER="earningForDate ge ${TODAY} and earningForDate le ${TODAY}"
-          BODY=$(mktemp)
-          HEADERS=$(mktemp)
-          METRICS=$(curl -sS -D "$HEADERS" -o "$BODY" -w '%{http_code} %{time_total}' \
-            -X POST \
-            -G 'https://api.partner.microsoft.com/v1.0/payouts/transactionhistory' \
-            --data-urlencode "\$filter=${FILTER}" \
-            --data-urlencode 'fileformat=csv' \
-            -H "Authorization: Bearer ${TOKEN}" \
-            -H 'Accept: application/json' \
-            -H 'Content-Length: 0')
-          CODE=$(awk '{print $1}' <<<"$METRICS")
-          TIME=$(awk '{print $2}' <<<"$METRICS")
-          echo "date=$TODAY"
-          echo "earnings_http_status=$CODE"
-          echo "earnings_seconds=$TIME"
-          echo 'response_headers_begin'
-          grep -Ei '^(HTTP/|request-id:|location:|content-type:|retry-after:)' "$HEADERS" || true
-          echo 'response_headers_end'
-          echo 'response_body_begin'
-          cat "$BODY"
-          echo
-          echo 'response_body_end'
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0' >/dev/null
+          curl -fsSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          cd earnings-apk
+          /tmp/gradle-8.9/bin/gradle --no-daemon :app:assembleDebug
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../Microsoft-Earnings-Standalone.apk
+          ls -lh ../Microsoft-Earnings-Standalone.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Microsoft-Earnings-Standalone
+          path: Microsoft-Earnings-Standalone.apk
+          if-no-files-found: error
+          retention-days: 7

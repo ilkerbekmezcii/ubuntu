@@ -19,75 +19,79 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Fetch Tiwoo work branch to ephemeral disk
-        shell: bash
-        env:
-          SOURCE_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-source-proxy
-          SOURCE_AUD: tiwoo-source-v1
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import concurrent.futures, json, os, pathlib, urllib.parse, urllib.request
-
-          source_url=os.environ['SOURCE_URL']
-          audience=os.environ['SOURCE_AUD']
-          oidc_url=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=' + urllib.parse.quote(audience)
-          req=urllib.request.Request(oidc_url,headers={'Authorization':'bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
-          with urllib.request.urlopen(req,timeout=30) as r:
-              token=json.load(r)['value']
-
-          def get(url):
-              req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token})
-              with urllib.request.urlopen(req,timeout=90) as r:
-                  return r.read()
-
-          manifest=json.loads(get(source_url+'?op=manifest'))
-          files=manifest['files']
-          root=pathlib.Path('/tmp/tiwoo')
-          root.mkdir(parents=True,exist_ok=True)
-
-          def fetch_file(item):
-              path=item['path']
-              sha=item['sha']
-              dest=root/path
-              dest.parent.mkdir(parents=True,exist_ok=True)
-              data=get(source_url+'?op=blob&sha='+urllib.parse.quote(sha))
-              dest.write_bytes(data)
-              return path
-
-          with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
-              for _ in ex.map(fetch_file,files):
-                  pass
-
-          print('SOURCE_COMMIT='+manifest['commit'])
-          print('SOURCE_FILES='+str(len(files)))
-          PY
-
-      - name: Install dependencies
-        working-directory: /tmp/tiwoo
-        run: npm install --ignore-scripts --no-audit --no-fund
-
-      - name: Run complete work build
-        working-directory: /tmp/tiwoo
-        run: npm run build
-
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
 
-      - name: Type-check active AI Edge Functions
-        working-directory: /tmp/tiwoo
+      - name: Fetch private Tiwoo cleanup payload to ephemeral disk
+        shell: bash
+        env:
+          PAYLOAD_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-cleanup-payload
+          PAYLOAD_AUD: tiwoo-cleanup-payload-v1
         run: |
           set -euo pipefail
-          deno check supabase/functions/tiwoo-ai-publisher/index.ts
-          deno check supabase/functions/tiwoo-push-dispatch/index.ts
-          deno check supabase/functions/tiwoo-ai-dm/index.ts
-          deno check supabase/functions/tiwoo-ai-mention/index.ts
-          deno check supabase/functions/tiwoo-ai-mention-worktest/index.ts
-          deno check supabase/functions/tiwoo-ai-dispatch/index.ts
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.parse, urllib.request
+          base=os.environ['PAYLOAD_URL']
+          aud=os.environ['PAYLOAD_AUD']
+          oidc=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience='+urllib.parse.quote(aud)
+          req=urllib.request.Request(oidc,headers={'Authorization':'bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              token=json.load(r)['value']
+          def get(name):
+              url=base+'?file='+urllib.parse.quote(name)
+              req=urllib.request.Request(url,headers={'Authorization':'Bearer '+token})
+              with urllib.request.urlopen(req,timeout=60) as r:return r.read()
+          files=json.loads(get('manifest'))
+          root=pathlib.Path('/tmp/tiwoo-cleanup')
+          for name in files:
+              dest=root/name
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              dest.write_bytes(get(name))
+          print('PAYLOAD_FILES='+str(len(files)))
+          PY
 
-      - name: Confirm cleanup source is ephemeral
+      - name: Syntax-check frontend cleanup files
+        working-directory: /tmp/tiwoo-cleanup
+        run: |
+          set -euo pipefail
+          node --check public/tiwoo-ai-mention.js
+          node --check public/composer-mention-fixes.js
+
+      - name: Type-check autonomous publisher cleanup
+        working-directory: /tmp/tiwoo-cleanup
+        run: deno check supabase/functions/tiwoo-ai-publisher/index.ts
+
+      - name: Audit canonical handles and removed behavior routing
+        working-directory: /tmp/tiwoo-cleanup
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          files=[p for p in Path('.').rglob('*') if p.is_file()]
+          text='\n'.join(p.read_text(encoding='utf-8') for p in files)
+          legacy=[r'@kata(?![A-Za-z0-9_.-])',r'@tiwoo(?![A-Za-z0-9_.-])',r'@lina_ai(?![A-Za-z0-9_.-])']
+          for pattern in legacy:
+              if re.search(pattern,text,re.I): raise SystemExit('legacy handle remains: '+pattern)
+          for token in ['ADMIN_HANDLE','adminRule','canonicalBotHandle','canonicalPlatformHandle','quotaHeavyDevelopmentRequest','tiwooLinaChatGuard']:
+              if token.lower() in text.lower(): raise SystemExit('obsolete behavior token remains: '+token)
+          if '@luna' not in text or '@lina' not in text: raise SystemExit('canonical handles missing')
+          if 'Gereksiz iş yapma' not in text: raise SystemExit('no-unnecessary-work instruction missing')
+          print('cleanup_static_audit=ok')
+          PY
+
+      - name: Smoke-test public Tiwoo and retired endpoint protection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(curl -L -sS -o /tmp/tiwoo-home -w '%{http_code}' https://tiwoo.vercel.app/)" = "200"
+          code="$(curl -sS -o /tmp/retired -w '%{http_code}' https://avpjpoywjyhnvbaqxyip.supabase.co/functions/v1/tiwoo-admin-auth-check)"
+          test "$code" = "401" -o "$code" = "410"
+          echo "production_home=200 retired_endpoint=$code"
+
+      - name: Remove private payload from runner
         if: always()
         run: |
-          rm -rf /tmp/tiwoo
-          test ! -e /tmp/tiwoo
+          rm -rf /tmp/tiwoo-cleanup /tmp/tiwoo-home /tmp/retired
+          test ! -e /tmp/tiwoo-cleanup

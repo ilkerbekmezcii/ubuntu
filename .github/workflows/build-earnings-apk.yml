@@ -1,0 +1,61 @@
+name: Build Microsoft Earnings APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android-earnings/**'
+      - '.github/workflows/build-earnings-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PARTNER_CENTER_CLIENT_ID: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+      PARTNER_CENTER_TENANT_ID: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable public-client OAuth for the existing Entra app
+        shell: bash
+        run: |
+          set -euo pipefail
+          az login --tenant "$PARTNER_CENTER_TENANT_ID" --use-device-code --allow-no-subscriptions >/tmp/login.json
+          OBJ=$(az ad app show --id "$PARTNER_CENTER_CLIENT_ID" --query id -o tsv)
+          test -n "$OBJ"
+          az rest --method PATCH \
+            --uri "https://graph.microsoft.com/v1.0/applications/$OBJ" \
+            --headers 'Content-Type=application/json' \
+            --body '{"isFallbackPublicClient":true}' >/dev/null
+          echo 'public_client_enabled=true'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Build APK
+        working-directory: android-earnings
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$PARTNER_CENTER_CLIENT_ID"
+          test -n "$PARTNER_CENTER_TENANT_ID"
+          gradle --no-daemon assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../Microsoft-Earnings-debug.apk
+          ls -lh ../Microsoft-Earnings-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Microsoft-Earnings-debug-apk
+          path: Microsoft-Earnings-debug.apk
+          if-no-files-found: error

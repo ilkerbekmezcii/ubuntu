@@ -1,0 +1,89 @@
+name: Tiwoo Private Test
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  id-token: write
+  issues: write
+
+concurrency:
+  group: tiwoo-private-test-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.event.issue.user.login == 'ilkerbekmezcii' && startsWith(github.event.issue.title, '[TIWOO TEST]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Fetch private Tiwoo work tree through OIDC relay
+        shell: bash
+        env:
+          SOURCE_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/tiwoo-test-source-v1
+          SOURCE_AUD: tiwoo-test-source-v1
+        run: |
+          set -euo pipefail
+          TOKEN="$(python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=' + urllib.parse.quote(os.environ['SOURCE_AUD'])
+          req = urllib.request.Request(url, headers={'Authorization': 'bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              print(json.load(response)['value'])
+          PY
+          )"
+          rm -rf /tmp/tiwoo-src /tmp/tiwoo-src.tar.gz
+          mkdir -p /tmp/tiwoo-src
+          HTTP_CODE="$(curl --silent --show-error --location \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -w '%{http_code}' \
+            "${SOURCE_URL}" \
+            -o /tmp/tiwoo-src.tar.gz)"
+          echo "SOURCE_HTTP_STATUS=${HTTP_CODE}"
+          test "$HTTP_CODE" = "200"
+          test -s /tmp/tiwoo-src.tar.gz
+          gzip -t /tmp/tiwoo-src.tar.gz
+          tar -tzf /tmp/tiwoo-src.tar.gz >/dev/null
+          tar -xzf /tmp/tiwoo-src.tar.gz --strip-components=1 -C /tmp/tiwoo-src
+          test -f /tmp/tiwoo-src/package.json
+          echo "PRIVATE_SOURCE_READY=1"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        working-directory: /tmp/tiwoo-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+
+      - name: Run Tiwoo work release gates
+        working-directory: /tmp/tiwoo-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run test:work
+
+      - name: Remove private source from runner
+        if: always()
+        shell: bash
+        run: rm -rf /tmp/tiwoo-src /tmp/tiwoo-src.tar.gz
+
+      - name: Report result
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          TEST_STATUS: ${{ job.status }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `TIWOO_TEST_RESULT=${process.env.TEST_STATUS} ref=work`
+            });

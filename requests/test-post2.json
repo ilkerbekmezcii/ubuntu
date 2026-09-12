@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "test-post2",
+  "method": "POST",
+  "url": "https://httpbin.org/post",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body_base64": "eyJzb3VyY2UiOiJnaC1odHRwLWJyaWRnZSIsIm1lc3NhZ2UiOiJyZWFsIHJ1bm5lciBQT1NUIHRlc3QiLCJ0aW1lc3RhbXAiOiIyMDI2LTA5LTEyIn0=",
+  "body_secret_slot": null,
+  "timeout_seconds": 30,
+  "max_bytes": 1048576,
+  "created_at": "2026-09-12T13:34:43.025038+00:00"
+}

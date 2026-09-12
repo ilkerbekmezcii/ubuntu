@@ -4,11 +4,11 @@ android {
     namespace 'com.ilker.microsoftreport'
     compileSdk 36
     defaultConfig {
-        applicationId 'com.ilker.microsoftreport'
+        applicationId 'com.ilker.microsoftstoresales5m'
         minSdk 26
         targetSdk 34
-        versionCode 21
-        versionName '3.0.1'
+        versionCode 3
+        versionName '1.1.1'
     }
     buildTypes {
         release {

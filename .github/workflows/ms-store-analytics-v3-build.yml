@@ -34,9 +34,23 @@ jobs:
           /tmp/gradle-8.11.1/bin/gradle --no-daemon :app:assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk ../Microsoft-Store-Analytics-v3-debug.apk
           sha256sum ../Microsoft-Store-Analytics-v3-debug.apk
+      - name: Package apksigner only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/apksigner-tool/lib
+          cp "$ANDROID_HOME/build-tools/36.0.0/apksigner" /tmp/apksigner-tool/apksigner
+          cp "$ANDROID_HOME/build-tools/36.0.0/lib/apksigner.jar" /tmp/apksigner-tool/lib/apksigner.jar
+          tar -C /tmp -czf android-apksigner-36.tgz apksigner-tool
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: Microsoft-Store-Analytics-v3-debug
           path: Microsoft-Store-Analytics-v3-debug.apk
+          if-no-files-found: error
+      - name: Upload apksigner tool
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apksigner-36
+          path: android-apksigner-36.tgz
           if-no-files-found: error

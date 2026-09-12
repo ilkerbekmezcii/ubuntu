@@ -1,10 +1,8 @@
 name: Supabase Training Cleanup
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/supabase-training-cleanup.yml'
+  issues:
+    types: [opened]
 
 permissions:
   contents: read
@@ -12,10 +10,11 @@ permissions:
 
 jobs:
   cleanup:
+    if: github.event.issue.user.login == 'ilkerbekmezcii' && github.event.issue.title == '[SUPABASE TRAINING CLEANUP]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Delete training bucket through OIDC-authenticated CLI call
+      - name: Delete training bucket through OIDC-authenticated curl CLI
         shell: bash
         env:
           CLEANUP_URL: https://hiyduakdyfcpibwxrtan.supabase.co/functions/v1/training-controller-v2-temp

@@ -59,12 +59,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- responses/; then
+          git add responses/
+          if git diff --cached --quiet; then
             echo "No responses changed."
             exit 0
           fi
           git config user.name "ghhttp-relay[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add responses/
           git commit -m "ghhttp: response ${GITHUB_SHA::12}"
           git push

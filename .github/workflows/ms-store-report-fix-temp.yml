@@ -1,0 +1,193 @@
+name: MS Store Report Fix Temp
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  repair:
+    if: startsWith(github.event.issue.title, '[MS-REPORT-FIX]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Secure Microsoft report repair
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          printf '%s' "$ISSUE_BODY" > request.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('request.json',encoding='utf-8'))
+          for k in ('tenant_id','client_id'):
+              if not isinstance(d.get(k),str) or not d[k]:
+                  raise SystemExit(f'missing {k}')
+          PY
+
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out private.pem >/dev/null 2>&1
+          openssl pkey -in private.pem -pubout -out public.pem >/dev/null 2>&1
+          PUB=$(base64 -w0 < public.pem)
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" -f body="PUBLIC_KEY:$PUB" >/dev/null
+
+          CIPHER=""
+          for i in $(seq 1 180); do
+            CIPHER=$(gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments?per_page=100" --jq '.[] | select(.body | startswith("CIPHERTEXT:")) | .body' | tail -n1 | sed 's/^CIPHERTEXT://')
+            if [ -n "$CIPHER" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "$CIPHER" ]; then
+            gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" -f body='RESULT:{"ok":false,"error":"ciphertext_timeout"}' >/dev/null
+            exit 1
+          fi
+
+          printf '%s' "$CIPHER" | base64 -d > secret.enc
+          openssl pkeyutl -decrypt -inkey private.pem -in secret.enc -out client_secret.txt -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+
+          python3 - <<'PY'
+          import json, os, time, urllib.parse, urllib.request, urllib.error
+          from datetime import datetime, timedelta, timezone
+
+          cfg=json.load(open('request.json',encoding='utf-8'))
+          secret=open('client_secret.txt',encoding='utf-8').read().strip()
+          tenant=cfg['tenant_id']; client=cfg['client_id']
+          base='https://manage.devcenter.microsoft.com/consumer/insights/v1.1'
+
+          def req(url, method='GET', headers=None, body=None, timeout=90):
+              h={'Accept':'application/json'}
+              if headers: h.update(headers)
+              data=None
+              if body is not None:
+                  data=json.dumps(body,separators=(',',':')).encode()
+                  h['Content-Type']='application/json'
+              r=urllib.request.Request(url,data=data,headers=h,method=method)
+              try:
+                  with urllib.request.urlopen(r,timeout=timeout) as x:
+                      raw=x.read().decode('utf-8','replace')
+                      return x.status, json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as e:
+                  raw=e.read().decode('utf-8','replace')
+                  try: payload=json.loads(raw) if raw else {}
+                  except: payload={'raw':raw[:1000]}
+                  return e.code,payload
+
+          form=urllib.parse.urlencode({'grant_type':'client_credentials','client_id':client,'client_secret':secret,'resource':'https://manage.devcenter.microsoft.com'}).encode()
+          tr=urllib.request.Request(f'https://login.microsoftonline.com/{tenant}/oauth2/token',data=form,headers={'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},method='POST')
+          with urllib.request.urlopen(tr,timeout=60) as x:
+              tj=json.loads(x.read().decode())
+          token=tj['access_token']
+          auth={'Authorization':'Bearer '+token}
+
+          qstatus,qj=req(base+'/ScheduledQueries',headers=auth)
+          if qstatus!=200: raise SystemExit('scheduled_queries_http_'+str(qstatus))
+          queries=qj.get('value') or qj.get('Value') or []
+          required=('from acquisitions','titlename','datestamp','purchasequantity','purchasepriceusdamount','purchasetaxusdamount')
+          def good(q):
+              s=(q.get('query') or q.get('Query') or '').lower()
+              return all(x in s for x in required)
+          match=next((q for q in queries if good(q)),None)
+          created_query=False
+          if not match:
+              query=("SELECT ProductId, TitleName, SkuDisplayName, ParentProductName, ParentProductId, DateStamp, "
+                     "PurchaseQuantity, PurchasePriceUSDAmount, PurchaseTaxUSDAmount "
+                     "FROM Acquisitions WHERE ProductId IN ('all') TIMESPAN LAST_30_DAYS AGGREGATED Daily")
+              qs,qres=req(base+'/ScheduledQueries','POST',auth,{
+                  'Query':query,
+                  'Name':'Microsoft Store Analytics App Names',
+                  'Description':'Daily acquisitions with application names and gross/tax amounts.'
+              })
+              if qs not in (200,201):
+                  print('QUERY_CREATE_ERROR',qs,json.dumps(qres)[:1500])
+                  raise SystemExit('query_create_http_'+str(qs))
+              vals=qres.get('value') or qres.get('Value') or []
+              if not vals: raise SystemExit('query_create_empty')
+              match=vals[0]; created_query=True
+          query_id=match.get('queryId') or match.get('QueryId')
+          query_text=match.get('query') or match.get('Query') or ''
+
+          rs,rj=req(base+'/ScheduledReport',headers=auth)
+          reports=(rj.get('value') or rj.get('Value') or []) if rs==200 else []
+          def val(x,a,b): return x.get(a) if x.get(a) is not None else x.get(b)
+          active=[r for r in reports if (val(r,'queryId','QueryId')==query_id and str(val(r,'reportStatus','ReportStatus') or '').lower()=='active')]
+          instant=next((r for r in active if bool(val(r,'executeNow','ExecuteNow'))),None)
+          scheduled=next((r for r in active if not bool(val(r,'executeNow','ExecuteNow'))),None)
+
+          created_instant=False
+          if not instant:
+              s,ir=req(base+'/ScheduledReport','POST',auth,{
+                  'Description':'Microsoft Store Analytics app-name repair instant report',
+                  'QueryId':query_id,
+                  'ReportName':'Microsoft Store Analytics App Names - Instant',
+                  'executeNow':True
+              })
+              if s not in (200,201):
+                  print('INSTANT_CREATE_ERROR',s,json.dumps(ir)[:1500])
+                  raise SystemExit('instant_create_http_'+str(s))
+              vals=ir.get('value') or ir.get('Value') or []
+              if not vals: raise SystemExit('instant_create_empty')
+              instant=vals[0]; created_instant=True
+
+          created_scheduled=False
+          if not scheduled:
+              start=(datetime.now(timezone.utc)+timedelta(hours=5)).replace(microsecond=0).isoformat().replace('+00:00','Z')
+              payload={'Description':'Microsoft Store Analytics app-name recurring report','QueryId':query_id,'ReportName':'Microsoft Store Analytics App Names - Recurring','StartTime':start,'RecurrenceCount':720,'RecurrenceInterval':1}
+              s,sr=req(base+'/ScheduledReport','POST',auth,payload)
+              if s not in (200,201):
+                  payload['RecurrenceCount']=180; payload['RecurrenceInterval']=24
+                  s,sr=req(base+'/ScheduledReport','POST',auth,payload)
+              if s not in (200,201):
+                  print('SCHEDULE_CREATE_ERROR',s,json.dumps(sr)[:1500])
+                  raise SystemExit('schedule_create_http_'+str(s))
+              vals=sr.get('value') or sr.get('Value') or []
+              if not vals: raise SystemExit('schedule_create_empty')
+              scheduled=vals[0]; created_scheduled=True
+
+          instant_id=val(instant,'reportId','ReportId')
+          scheduled_id=val(scheduled,'reportId','ReportId')
+          header=[]; execution_status='Pending'; execution_id=''
+          for _ in range(36):
+              es,ej=req(base+'/ScheduledReport/execution/'+urllib.parse.quote(str(instant_id))+'?executionStatus=Completed&getLatestExecution=true',headers=auth)
+              vals=(ej.get('value') or ej.get('Value') or []) if es==200 else []
+              if vals:
+                  ex=vals[0]; execution_status=val(ex,'executionStatus','ExecutionStatus') or 'Completed'; execution_id=val(ex,'executionId','ExecutionId') or ''
+                  link=val(ex,'reportAccessSecureLink','ReportAccessSecureLink') or ''
+                  if link:
+                      rr=urllib.request.Request(link,headers={'Accept':'text/csv,*/*'},method='GET')
+                      with urllib.request.urlopen(rr,timeout=120) as x:
+                          first=x.readline().decode('utf-8-sig','replace').strip()
+                      import csv, io
+                      header=next(csv.reader(io.StringIO(first))) if first else []
+                  break
+              time.sleep(10)
+
+          result={
+            'ok':True,
+            'query_id':query_id,
+            'query_created':created_query,
+            'query_has_required_columns':all(x in query_text.lower() for x in required),
+            'instant_report_id':instant_id,
+            'instant_created':created_instant,
+            'scheduled_report_id':scheduled_id,
+            'scheduled_created':created_scheduled,
+            'scheduled_recurrence_interval':val(scheduled,'recurrenceInterval','RecurrenceInterval'),
+            'scheduled_recurrence_count':val(scheduled,'recurrenceCount','RecurrenceCount'),
+            'instant_execution_status':execution_status,
+            'instant_execution_id':execution_id,
+            'csv_header':header
+          }
+          open('result.json','w',encoding='utf-8').write(json.dumps(result,separators=(',',':')))
+          PY
+
+          RESULT=$(cat result.json)
+          gh api "repos/$REPO/issues/$ISSUE_NUMBER/comments" -f body="RESULT:$RESULT" >/dev/null
+          shred -u client_secret.txt secret.enc private.pem 2>/dev/null || true
+          rm -f public.pem request.json result.json

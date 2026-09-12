@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: '24'
+      checkout-ref:
+        description: Optional caller repository ref to test
+        required: false
+        type: string
+        default: ''
       test-command:
         description: Command to run after dependency install
         required: true
@@ -23,16 +28,23 @@ jobs:
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref != '' && inputs.checkout-ref || github.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: npm
+          cache: ${{ hashFiles('package-lock.json') != '' && 'npm' || '' }}
 
       - name: Install dependencies
         shell: bash
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
 
       - name: Run caller tests
         shell: bash

@@ -1,0 +1,70 @@
+name: ghhttp relay
+
+on:
+  push:
+    paths:
+      - 'requests/*.json'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ghhttp-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GHHTTP_SECRET_1: ${{ secrets.GHHTTP_SECRET_1 }}
+      GHHTTP_SECRET_2: ${{ secrets.GHHTTP_SECRET_2 }}
+      GHHTTP_SECRET_3: ${{ secrets.GHHTTP_SECRET_3 }}
+      GHHTTP_SECRET_4: ${{ secrets.GHHTTP_SECRET_4 }}
+      GHHTTP_SECRET_5: ${{ secrets.GHHTTP_SECRET_5 }}
+      GHHTTP_SECRET_6: ${{ secrets.GHHTTP_SECRET_6 }}
+      GHHTTP_SECRET_7: ${{ secrets.GHHTTP_SECRET_7 }}
+      GHHTTP_SECRET_8: ${{ secrets.GHHTTP_SECRET_8 }}
+    steps:
+      - name: Checkout relay mailbox
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Execute new HTTP requests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" -- 'requests/*.json')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No request manifests found."
+            exit 0
+          fi
+
+          mkdir -p responses
+          for request_file in "${files[@]}"; do
+            [ -f "$request_file" ] || continue
+            request_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["id"])' "$request_file")"
+            response_file="responses/${request_id}.json"
+            tmp="$(mktemp)"
+            if python3 relay/execute_request.py "$request_file" > "$tmp"; then
+              :
+            else
+              :
+            fi
+            mv "$tmp" "$response_file"
+          done
+
+      - name: Commit response manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- responses/; then
+            echo "No responses changed."
+            exit 0
+          fi
+          git config user.name "ghhttp-relay[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add responses/
+          git commit -m "ghhttp: response ${GITHUB_SHA::12}"
+          git push

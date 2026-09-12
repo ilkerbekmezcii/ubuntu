@@ -30,7 +30,10 @@ public final class EnvConfig {
             String key = line.substring(0,eq).trim().toUpperCase(Locale.ROOT);
             values.put(key, unquote(line.substring(eq+1).trim()));
         }
-        return new EnvConfig(first(values,"TENANT_ID","AZURE_TENANT_ID","MICROSOFT_TENANT_ID"), first(values,"CLIENT_ID","AZURE_CLIENT_ID","MICROSOFT_CLIENT_ID"), first(values,"CLIENT_SECRET","AZURE_CLIENT_SECRET","MICROSOFT_CLIENT_SECRET","MS_CLIENT_SECRET","PARTNER_CENTER_CLIENT_SECRET"));
+        return new EnvConfig(
+                first(values,"TENANT_ID","AZURE_TENANT_ID","MICROSOFT_TENANT_ID","PARTNER_CENTER_TENANT_ID"),
+                first(values,"CLIENT_ID","AZURE_CLIENT_ID","MICROSOFT_CLIENT_ID","PARTNER_CENTER_CLIENT_ID"),
+                first(values,"CLIENT_SECRET","AZURE_CLIENT_SECRET","MICROSOFT_CLIENT_SECRET","MS_CLIENT_SECRET","PARTNER_CENTER_CLIENT_SECRET"));
     }
     private static String first(Map<String,String> map,String...keys){ for(String key:keys){String v=map.get(key); if(v!=null&&!v.trim().isEmpty()) return v.trim();} return ""; }
     private static String unquote(String v){ if(v.length()>=2){char a=v.charAt(0),b=v.charAt(v.length()-1); if((a=='"'&&b=='"')||(a=='\''&&b=='\'')) return v.substring(1,v.length()-1);} return v; }

@@ -1,0 +1,1 @@
+package com.ilker.microsoftreport;import android.content.*;public final class BootReceiver extends BroadcastReceiver{@Override public void onReceive(Context c,Intent i){if(new AuthStore(c).hasConfig())try{PollService.ensureRunning(c);}catch(Throwable ignored){}}}

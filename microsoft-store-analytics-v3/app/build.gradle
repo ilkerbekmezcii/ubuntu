@@ -1,0 +1,24 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.ilker.microsoftreport'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'com.ilker.microsoftreport'
+        minSdk 26
+        targetSdk 34
+        versionCode 20
+        versionName '3.0.0'
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

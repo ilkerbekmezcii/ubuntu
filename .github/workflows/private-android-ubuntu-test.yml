@@ -1,0 +1,70 @@
+name: Private Android Ubuntu Test
+
+on:
+  workflow_call:
+    inputs:
+      test-script:
+        description: Private caller build/test script
+        required: false
+        type: string
+        default: ci/public-ubuntu-test.sh
+      semantic-script:
+        description: Private caller semantic audit script
+        required: false
+        type: string
+        default: ci/semantic-check.sh
+      emulator-script:
+        description: Private caller emulator smoke script
+        required: false
+        type: string
+        default: ci/emulator-smoke.sh
+
+permissions:
+  contents: read
+
+jobs:
+  android-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout private caller repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platform-tools' 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Build and parser tests
+        shell: bash
+        run: bash "${{ inputs.test-script }}"
+
+      - name: Earnings month semantics audit
+        shell: bash
+        continue-on-error: true
+        run: bash "${{ inputs.semantic-script }}"
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+
+      - name: Android emulator smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: bash "${{ inputs.emulator-script }}"

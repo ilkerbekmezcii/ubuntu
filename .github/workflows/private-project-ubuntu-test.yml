@@ -1,0 +1,39 @@
+name: Private Project Ubuntu Test
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node.js version
+        required: false
+        type: string
+        default: '24'
+      test-command:
+        description: Command to run after dependency install
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        shell: bash
+        run: npm ci
+
+      - name: Run caller tests
+        shell: bash
+        run: ${{ inputs.test-command }}

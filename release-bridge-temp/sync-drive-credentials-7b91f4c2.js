@@ -30,6 +30,7 @@ function parseEnv(text) {
   }
   return out;
 }
+function shq(v) { return "'" + String(v).replace(/'/g, "'\\''") + "'"; }
 
 export default async function handler(req, res) {
   try {
@@ -61,26 +62,43 @@ export default async function handler(req, res) {
     if (!sa.private_key || !sa.client_email || !g.GITHUB_TOKEN || !senv.alias || !senv.password) {
       throw new Error('credential_parse_failed');
     }
-    const cfg = { storePassword: senv.password, keyAlias: senv.alias, keyPassword: senv.password };
+
     const box = await Sandbox.get({ name: 'earth-games-release-vm', resume: true });
+    const base = '/vercel/sandbox';
+    const gitAskPass = '#!/bin/sh\ncase "$1" in\n  *Username*) echo x-access-token ;;\n  *Password*) cat /vercel/sandbox/credentials/github-token ;;\nesac\n';
+    const k = base + '/credentials/upload.jks';
+    const pw = shq(senv.password);
+    const alias = shq(senv.alias);
+    const signing = [
+      '#!/bin/sh',
+      'apply_signing() {',
+      '  case "$1" in',
+      `    adam) export ADAMASMACA_STORE_FILE=${shq(k)} ADAMASMACA_STORE_PASSWORD=${pw} ADAMASMACA_KEY_ALIAS=${alias} ADAMASMACA_KEY_PASSWORD=${pw} ;;`,
+      `    apple) export APPLE_HUNTER_KEYSTORE_PATH=${shq(k)} APPLE_HUNTER_KEYSTORE_PASSWORD=${pw} APPLE_HUNTER_KEY_ALIAS=${alias} APPLE_HUNTER_KEY_PASSWORD=${pw} ;;`,
+      `    blue) export BLUE_CUBE_KEYSTORE_PATH=${shq(k)} BLUE_CUBE_KEYSTORE_PASSWORD=${pw} BLUE_CUBE_KEY_ALIAS=${alias} BLUE_CUBE_KEY_PASSWORD=${pw} ;;`,
+      `    brain) export BRAINGAMES_KEYSTORE_PATH=${shq(k)} BRAINGAMES_KEYSTORE_PASSWORD=${pw} BRAINGAMES_KEY_ALIAS=${alias} BRAINGAMES_KEY_PASSWORD=${pw} ;;`,
+      `    cengel) export CENGEL_STORE_FILE=${shq(k)} CENGEL_STORE_PASSWORD=${pw} CENGEL_KEY_ALIAS=${alias} CENGEL_KEY_PASSWORD=${pw} ;;`,
+      `    chess) export BLACKCHESS_STORE_FILE=${shq(k)} BLACKCHESS_STORE_PASSWORD=${pw} BLACKCHESS_KEY_ALIAS=${alias} BLACKCHESS_KEY_PASSWORD=${pw} ;;`,
+      `    gameconsole) export GAMECONSOLE_STORE_FILE=${shq(k)} GAMECONSOLE_STORE_PASSWORD=${pw} GAMECONSOLE_KEY_ALIAS=${alias} GAMECONSOLE_KEY_PASSWORD=${pw} ;;`,
+      '    *) return 2 ;;',
+      '  esac',
+      '}',
+      ''
+    ].join('\n');
+
     await box.writeFiles([
       { path: 'credentials/play-service-account.json', content: Buffer.from(JSON.stringify(sa)) },
       { path: 'credentials/github-token', content: Buffer.from(g.GITHUB_TOKEN) },
       { path: 'credentials/upload.jks', content: jksBytes },
-      { path: 'credentials/release-config.json', content: Buffer.from(JSON.stringify(cfg)) }
+      { path: 'credentials/git-askpass.sh', content: Buffer.from(gitAskPass) },
+      { path: 'credentials/signing.sh', content: Buffer.from(signing) }
     ]);
     for (const path of [
-      'credentials/play-service-account.json',
-      'credentials/github-token',
-      'credentials/upload.jks',
-      'credentials/release-config.json'
-    ]) await box.runCommand('chmod', ['600', path]);
+      'credentials/play-service-account.json', 'credentials/github-token', 'credentials/upload.jks',
+      'credentials/git-askpass.sh', 'credentials/signing.sh'
+    ]) await box.runCommand('chmod', [path.endsWith('.sh') ? '700' : '600', path]);
 
-    return res.status(200).json({
-      ok: true,
-      synced: { play: true, github: true, keystore: true, config: true },
-      sizes: { jks: jksBytes.length }
-    });
+    return res.status(200).json({ ok: true, synced: { play: true, github: true, keystore: true, helpers: true }, sizes: { jks: jksBytes.length } });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }

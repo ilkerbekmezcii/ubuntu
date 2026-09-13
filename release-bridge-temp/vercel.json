@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "functions": {
+    "api/global-coffee.js": {
+      "maxDuration": 60
+    }
+  }
+}

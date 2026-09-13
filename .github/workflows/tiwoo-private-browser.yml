@@ -29,12 +29,14 @@ jobs:
           with urllib.request.urlopen(req, timeout=30) as response: print(json.load(response)['value'])
           PY
           )"
-          rm -rf /tmp/tiwoo-src /tmp/tiwoo-browser /tmp/tiwoo-src.tar.gz
+          rm -rf /tmp/tiwoo-src /tmp/tiwoo-browser /tmp/tiwoo-src.tar.gz /tmp/tiwoo-source-meta.txt
           mkdir -p /tmp/tiwoo-src /tmp/tiwoo-browser
           code="$(curl --silent --show-error --location -H "Authorization: Bearer ${TOKEN}" -w '%{http_code}' "${SOURCE_URL}" -o /tmp/tiwoo-src.tar.gz)"
           test "$code" = "200"
           tar -xzf /tmp/tiwoo-src.tar.gz --strip-components=1 -C /tmp/tiwoo-src
           test -f /tmp/tiwoo-src/public/index.html
+          if grep -q "tiwooForgotBound" /tmp/tiwoo-src/public/auth-login-redesign.js; then marker=true; else marker=false; fi
+          printf 'reliableMarker=%s\nauthLoginSha256=%s\n' "$marker" "$(sha256sum /tmp/tiwoo-src/public/auth-login-redesign.js | awk '{print $1}')" | tee /tmp/tiwoo-source-meta.txt
 
       - name: Set up Node 22
         uses: actions/setup-node@v4
@@ -68,19 +70,16 @@ jobs:
           await page.waitForTimeout(2000);
           await page.locator('#publicLogin').click();
           await page.locator('#shellForgot').waitFor({state:'visible'});
+          const bound=await page.locator('#shellForgot').getAttribute('data-tiwoo-forgot-bound');
           await page.locator('#shellForgot').click();
           await page.waitForTimeout(250);
-          const result={
-            authVisible:await page.locator('#authModal').isVisible(),
-            forgotVisible:await page.locator('#forgotModal').isVisible(),
-            emailVisible:await page.locator('#forgotEmail').isVisible(),
-            emailFocused:await page.locator('#forgotEmail').evaluate(el=>document.activeElement===el),
-            pageErrors:errors
-          };
+          const authClass=await page.locator('#authModal').getAttribute('class');
+          const forgotClass=await page.locator('#forgotModal').getAttribute('class');
+          const result={bound,authClass,forgotClass,authVisible:await page.locator('#authModal').isVisible(),forgotVisible:await page.locator('#forgotModal').isVisible(),emailVisible:await page.locator('#forgotEmail').isVisible(),emailFocused:await page.locator('#forgotEmail').evaluate(el=>document.activeElement===el),pageErrors:errors};
           fs.writeFileSync('result.json',JSON.stringify(result,null,2));
           console.log(JSON.stringify(result,null,2));
           await browser.close();
-          if(result.authVisible||!result.forgotVisible||!result.emailVisible||!result.emailFocused||result.pageErrors.length)process.exit(1);
+          if(bound!=='1'||result.authVisible||!result.forgotVisible||!result.emailVisible||!result.emailFocused||result.pageErrors.length)process.exit(1);
           JS
           node regression.mjs
 
@@ -90,10 +89,11 @@ jobs:
         with:
           script: |
             const fs=require('fs');
-            let result='unavailable';
+            let result='unavailable',meta='unavailable';
             try{result=fs.readFileSync('/tmp/tiwoo-browser/result.json','utf8')}catch{}
-            await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:context.issue.number,body:`TIWOO_PRIVATE_BROWSER_RESULT\n\`\`\`json\n${result}\n\`\`\``});
+            try{meta=fs.readFileSync('/tmp/tiwoo-source-meta.txt','utf8').trim()}catch{}
+            await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:context.issue.number,body:`TIWOO_PRIVATE_BROWSER_RESULT\n${meta}\n\`\`\`json\n${result}\n\`\`\``});
 
       - name: Cleanup
         if: always()
-        run: rm -rf /tmp/tiwoo-src /tmp/tiwoo-browser /tmp/tiwoo-src.tar.gz /tmp/tiwoo-http.log
+        run: rm -rf /tmp/tiwoo-src /tmp/tiwoo-browser /tmp/tiwoo-src.tar.gz /tmp/tiwoo-http.log /tmp/tiwoo-source-meta.txt

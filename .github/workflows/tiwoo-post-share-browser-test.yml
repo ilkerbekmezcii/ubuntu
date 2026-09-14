@@ -1,0 +1,146 @@
+name: Tiwoo Post Share Browser Test
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: tiwoo-post-e2e-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  post-share:
+    if: github.event.issue.user.login == 'ilkerbekmezcii' && startsWith(github.event.issue.title, '[TIWOO POST E2E]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tiwoo-post-e2e
+          cd /tmp/tiwoo-post-e2e
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1.55.0 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+
+      - name: Run real production post share journey
+        working-directory: /tmp/tiwoo-post-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > test.mjs <<'JS'
+          import {chromium} from 'playwright';
+          import {randomUUID} from 'node:crypto';
+          import fs from 'node:fs';
+
+          const base='https://tiwoo.vercel.app';
+          const username=`e2epost_${Date.now().toString(36).slice(-8)}`;
+          const password=`T!${randomUUID().replaceAll('-','').slice(0,20)}a9`;
+          const postText=`Tiwoo gerçek tarayıcı gönderi testi ${new Date().toISOString()}`;
+          const result={ok:false,registered:false,session:false,appVisible:false,composerFound:false,submitted:false,visibleAfterSubmit:false,persistedAfterReload:false,cleanup:false,consoleErrors:[],pageErrors:[],failedRequests:[]};
+          let token='';
+          const browser=await chromium.launch({headless:true});
+          const context=await browser.newContext({viewport:{width:1440,height:1000}});
+          const page=await context.newPage();
+          page.setDefaultTimeout(8000);
+          page.on('console',m=>{if(m.type()==='error')result.consoleErrors.push(m.text().slice(0,500))});
+          page.on('pageerror',e=>result.pageErrors.push(String(e).slice(0,500)));
+          page.on('requestfailed',r=>result.failedRequests.push(`${r.method()} ${new URL(r.url()).pathname} :: ${r.failure()?.errorText||'failed'}`.slice(0,500)));
+
+          try {
+            await page.goto(base,{waitUntil:'domcontentloaded',timeout:30000});
+            await page.waitForTimeout(1800);
+            const reg=await page.request.post(`${base}/api/tiwoo-auth`,{data:{action:'register',username,password,name:'Tiwoo E2E Post'}});
+            const payload=await reg.json().catch(()=>({}));
+            if(!reg.ok()||!payload?.session?.accessToken||!payload?.session?.refreshToken)throw new Error(`register_${reg.status()}`);
+            result.registered=true;
+            token=payload.session.accessToken;
+
+            const sessionSet=await page.evaluate(async s=>{
+              const c=window.TiwooSupabase?.sb;
+              if(!c)return false;
+              const {data,error}=await c.auth.setSession({access_token:s.access,refresh_token:s.refresh});
+              return !error&&!!data?.session;
+            },{access:payload.session.accessToken,refresh:payload.session.refreshToken});
+            if(!sessionSet)throw new Error('session_set_failed');
+            result.session=true;
+
+            await page.reload({waitUntil:'domcontentloaded',timeout:30000});
+            await page.waitForTimeout(2500);
+            result.appVisible=await page.locator('#app:not(.hidden)').isVisible().catch(()=>false);
+            if(!result.appVisible)throw new Error('app_not_visible');
+
+            let composer=page.locator('#inlineText:visible').first();
+            if(!(await composer.count())){
+              const mobileCompose=page.locator('[data-compose-mobile]:visible').first();
+              const topCompose=page.locator('#topCompose:visible').first();
+              if(await topCompose.count())await topCompose.click();
+              else if(await mobileCompose.count())await mobileCompose.click();
+              composer=page.locator('#composeText:visible').first();
+            }
+            result.composerFound=!!(await composer.count());
+            if(!result.composerFound)throw new Error('composer_not_found');
+
+            await composer.fill(postText);
+            let send=page.locator('#inlineSend:visible').first();
+            if(!(await send.count()))send=page.locator('#composeSend:visible').first();
+            if(!(await send.count()))throw new Error('send_button_not_found');
+            await send.click();
+            result.submitted=true;
+            await page.waitForTimeout(1800);
+
+            result.visibleAfterSubmit=await page.getByText(postText,{exact:true}).first().isVisible().catch(()=>false);
+            if(!result.visibleAfterSubmit)throw new Error('post_not_visible_after_submit');
+
+            await page.reload({waitUntil:'domcontentloaded',timeout:30000});
+            await page.waitForTimeout(2200);
+            result.persistedAfterReload=await page.getByText(postText,{exact:true}).first().isVisible().catch(()=>false);
+            if(!result.persistedAfterReload)throw new Error('post_not_persisted_after_reload');
+
+            result.ok=true;
+          } catch(e) {
+            result.error=String(e?.message||e).slice(0,500);
+          } finally {
+            if(token){
+              const del=await page.request.post(`${base}/api/tiwoo-auth`,{headers:{authorization:`Bearer ${token}`},data:{action:'account_delete',confirmation:username,acknowledged:true}}).catch(()=>null);
+              result.cleanup=!!del&&del.ok();
+              result.cleanupStatus=del?.status?.()||0;
+            }
+            result.consoleErrors=result.consoleErrors.slice(0,20);
+            result.pageErrors=result.pageErrors.slice(0,20);
+            result.failedRequests=result.failedRequests.slice(0,20);
+            fs.writeFileSync('result.json',JSON.stringify(result,null,2));
+            console.log(JSON.stringify(result,null,2));
+            await context.close();
+            await browser.close();
+          }
+
+          if(!result.ok||!result.cleanup)process.exitCode=1;
+          JS
+          node test.mjs | tee browser.log
+
+      - name: Report result
+        if: always()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs=require('fs');
+            let body='TIWOO_POST_E2E_RESULT\n';
+            try { body += '```json\n'+fs.readFileSync('/tmp/tiwoo-post-e2e/result.json','utf8').slice(0,20000)+'\n```'; }
+            catch(e){ body += `result unavailable: ${e.message}`; }
+            await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:context.issue.number,body});
+
+      - name: Cleanup runner files
+        if: always()
+        shell: bash
+        run: rm -rf /tmp/tiwoo-post-e2e

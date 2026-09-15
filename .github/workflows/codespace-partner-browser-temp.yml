@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GH_TOKEN: ${{ secrets.GHHTTP_SECRET_1 }}
+      GH_TOKEN: ${{ secrets.TEMP_CODESPACE_TOKEN }}
       CODESPACE_NAME: tiwoo-private-6v9v9jww67vj24v4q
     steps:
       - name: Verify Codespace

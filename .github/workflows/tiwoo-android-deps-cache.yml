@@ -31,14 +31,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"; fi
+          test -x "$SDKM"
+          yes | "$SDKM" --licenses >/dev/null || true
+          "$SDKM" 'platforms;android-36' 'build-tools;36.0.0'
 
       - name: Resolve exact Tiwoo Android dependencies
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/deps/app/src/main/java/com/example/deps
+          mkdir -p /tmp/deps/app/src/main/java/com/example/deps /tmp/deps/app/src/main/res/values
           cat > /tmp/deps/settings.gradle <<'EOF'
           pluginManagement {
               repositories { google(); mavenCentral(); gradlePluginPortal() }
@@ -71,7 +74,6 @@ jobs:
           cat > /tmp/deps/app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:theme="@style/AppTheme"/></manifest>
           EOF
-          mkdir -p /tmp/deps/app/src/main/res/values
           cat > /tmp/deps/app/src/main/res/values/styles.xml <<'EOF'
           <resources><style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar"/></resources>
           EOF
@@ -87,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f "$HOME/.gradle/caches"/*/*.lock 2>/dev/null || true
+          find "$HOME/.gradle/caches" -name '*.lock' -delete 2>/dev/null || true
           tar --exclude='*.lock' --exclude='*.bin.lock' -C / -czf /tmp/tiwoo-android-offline-cache.tgz \
             tmp/gradle-8.11.1 \
             home/runner/.gradle/caches

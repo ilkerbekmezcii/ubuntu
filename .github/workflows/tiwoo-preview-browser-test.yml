@@ -1,0 +1,136 @@
+name: Tiwoo Preview Browser Test
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: tiwoo-preview-browser-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  browser:
+    if: github.event.issue.user.login == 'ilkerbekmezcii' && startsWith(github.event.issue.title, '[TIWOO PREVIEW BROWSER]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tiwoo-preview-browser
+          cd /tmp/tiwoo-preview-browser
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Run aligned preview in real Chromium
+        working-directory: /tmp/tiwoo-preview-browser
+        shell: bash
+        env:
+          TARGET_URL: ${{ github.event.issue.body }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -euo pipefail
+          cat > test.mjs <<'JS'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs';
+          const base=String(process.env.TARGET_URL||'').trim().replace(/\/+$/,'');
+          if(!/^https:\/\/[a-z0-9.-]+\.vercel\.app$/i.test(base))throw new Error(`invalid target: ${base}`);
+          const headers={};
+          if(process.env.VERCEL_AUTOMATION_BYPASS_SECRET)headers['x-vercel-protection-bypass']=process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+          const result={base,pages:[],desktop:{},mobile:{},consoleErrors:[],pageErrors:[],failedRequests:[],probeErrors:[]};
+          const browser=await chromium.launch({headless:true});
+          const wire=(page,label)=>{
+            page.setDefaultTimeout(6000);
+            page.on('console',m=>{if(m.type()==='error')result.consoleErrors.push(`${label}: ${m.text()}`)});
+            page.on('pageerror',e=>result.pageErrors.push(`${label}: ${String(e)}`));
+            page.on('requestfailed',r=>result.failedRequests.push(`${label}: ${r.method()} ${r.url()} :: ${r.failure()?.errorText||'failed'}`));
+          };
+          try{
+            const desktopContext=await browser.newContext({viewport:{width:1440,height:1000},extraHTTPHeaders:headers});
+            const page=await desktopContext.newPage();wire(page,'desktop');
+            for(const path of ['/','/hakkinda','/ozellikler','/privacy']){
+              try{
+                const r=await page.goto(base+path,{waitUntil:'domcontentloaded',timeout:30000});
+                await page.waitForTimeout(700);
+                result.pages.push({path,status:r?.status(),title:await page.title(),url:page.url(),h1:await page.locator('h1').first().innerText().catch(()=>null)});
+                if(!r?.ok())result.probeErrors.push(`desktop ${path}: HTTP ${r?.status()}`);
+                if(!(await page.title()).includes('Tiwoo'))result.probeErrors.push(`desktop ${path}: title missing Tiwoo`);
+              }catch(e){result.probeErrors.push(`desktop ${path}: ${e.message}`)}
+            }
+            await page.goto(base+'/',{waitUntil:'domcontentloaded',timeout:30000});await page.waitForTimeout(1800);
+            try{
+              await page.locator('#publicLanding').waitFor({state:'visible',timeout:15000});
+              const login=page.locator('#publicLogin');
+              if(!(await login.isVisible()))throw new Error('public login hidden');
+              await login.click();await page.waitForTimeout(400);
+              result.desktop.loginModal={visible:await page.locator('#authModal').isVisible(),emailVisible:await page.locator('#authEmail').isVisible(),emailEnabled:await page.locator('#authEmail').isEnabled(),title:await page.locator('#authTitle').innerText().catch(()=>null)};
+              await page.screenshot({path:'desktop-preview.png',fullPage:true});
+            }catch(e){result.probeErrors.push(`desktop auth: ${e.message}`)}
+            await desktopContext.close();
+
+            const mobileContext=await browser.newContext({viewport:{width:390,height:844},isMobile:true,extraHTTPHeaders:headers});
+            const mobile=await mobileContext.newPage();wire(mobile,'mobile');
+            const mr=await mobile.goto(base+'/',{waitUntil:'domcontentloaded',timeout:30000});await mobile.waitForTimeout(1800);
+            const scrollWidth=await mobile.evaluate(()=>document.documentElement.scrollWidth),clientWidth=await mobile.evaluate(()=>document.documentElement.clientWidth);
+            result.mobile.home={status:mr?.status(),title:await mobile.title(),scrollWidth,clientWidth};
+            if(!mr?.ok())result.probeErrors.push(`mobile /: HTTP ${mr?.status()}`);
+            if(scrollWidth-clientWidth>2)result.probeErrors.push(`mobile overflow: ${scrollWidth-clientWidth}px`);
+            if(!(await mobile.title()).includes('Tiwoo'))result.probeErrors.push('mobile title missing Tiwoo');
+            try{
+              await mobile.locator('#publicLanding').waitFor({state:'visible',timeout:15000});
+              const visible=mobile.locator('#publicLogin:visible,#publicLoginHero:visible').first();
+              if(!(await visible.count()))throw new Error('no visible login control');
+              result.mobile.clicked=await visible.getAttribute('id');await visible.click();await mobile.waitForTimeout(400);
+              result.mobile.loginModal={visible:await mobile.locator('#authModal').isVisible(),emailVisible:await mobile.locator('#authEmail').isVisible(),emailEnabled:await mobile.locator('#authEmail').isEnabled(),box:await mobile.locator('#authModal .modal-card').boundingBox().catch(()=>null)};
+              await mobile.screenshot({path:'mobile-preview.png',fullPage:true});
+            }catch(e){result.probeErrors.push(`mobile auth: ${e.message}`)}
+            await mobileContext.close();
+          } finally {
+            result.consoleErrors=result.consoleErrors.slice(0,30);result.pageErrors=result.pageErrors.slice(0,30);result.failedRequests=result.failedRequests.slice(0,40);
+            const ok=result.probeErrors.length===0&&result.pageErrors.length===0&&result.consoleErrors.length===0;
+            result.ok=ok;
+            fs.writeFileSync('result.json',JSON.stringify(result,null,2));
+            console.log(JSON.stringify(result,null,2));
+            await browser.close();
+            if(!ok)process.exitCode=1;
+          }
+          JS
+          node test.mjs | tee browser.log
+
+      - name: Upload screenshots and result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiwoo-preview-browser-result
+          path: |
+            /tmp/tiwoo-preview-browser/result.json
+            /tmp/tiwoo-preview-browser/desktop-preview.png
+            /tmp/tiwoo-preview-browser/mobile-preview.png
+          if-no-files-found: ignore
+
+      - name: Report browser result
+        if: always()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs=require('fs');
+            let body='TIWOO_PREVIEW_BROWSER_RESULT\n';
+            try { body += '```json\n'+fs.readFileSync('/tmp/tiwoo-preview-browser/result.json','utf8').slice(0,50000)+'\n```'; }
+            catch(e){ body += `browser result unavailable: ${e.message}`; }
+            await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:context.issue.number,body});
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf /tmp/tiwoo-preview-browser

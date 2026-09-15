@@ -1,0 +1,104 @@
+name: Tiwoo Android Dependency Cache
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+jobs:
+  deps:
+    if: github.event.issue.user.login == 'ilkerbekmezcii' && github.event.issue.title == '[TIWOO ANDROID DEPS 1.1.3]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Gradle 8.11.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-delay 2 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          echo '/tmp/gradle-8.11.1/bin' >> "$GITHUB_PATH"
+
+      - name: Ensure Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Resolve exact Tiwoo Android dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/deps/app/src/main/java/com/example/deps
+          cat > /tmp/deps/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'TiwooDeps'
+          include ':app'
+          EOF
+          cat > /tmp/deps/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.10.0' apply false
+          }
+          EOF
+          cat > /tmp/deps/app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.example.deps'
+              compileSdk 36
+              defaultConfig { applicationId 'com.example.deps'; minSdk 26; targetSdk 36; versionCode 1; versionName '1.0' }
+              compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+          }
+          dependencies {
+              implementation platform('com.google.firebase:firebase-bom:34.18.0')
+              implementation 'com.google.firebase:firebase-messaging'
+          }
+          EOF
+          cat > /tmp/deps/app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"><application android:theme="@style/AppTheme"/></manifest>
+          EOF
+          mkdir -p /tmp/deps/app/src/main/res/values
+          cat > /tmp/deps/app/src/main/res/values/styles.xml <<'EOF'
+          <resources><style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar"/></resources>
+          EOF
+          cat > /tmp/deps/app/src/main/java/com/example/deps/PushService.java <<'EOF'
+          package com.example.deps;
+          public final class PushService extends com.google.firebase.messaging.FirebaseMessagingService {}
+          EOF
+          cd /tmp/deps
+          gradle --no-daemon --stacktrace assembleRelease
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Package offline Gradle cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "$HOME/.gradle/caches"/*/*.lock 2>/dev/null || true
+          tar --exclude='*.lock' --exclude='*.bin.lock' -C / -czf /tmp/tiwoo-android-offline-cache.tgz \
+            tmp/gradle-8.11.1 \
+            home/runner/.gradle/caches
+          ls -lh /tmp/tiwoo-android-offline-cache.tgz
+          sha256sum /tmp/tiwoo-android-offline-cache.tgz
+
+      - name: Upload dependency cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiwoo-android-offline-cache-1.1.3
+          path: /tmp/tiwoo-android-offline-cache.tgz
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1

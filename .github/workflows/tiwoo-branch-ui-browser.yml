@@ -1,0 +1,212 @@
+name: Tiwoo Branch UI Browser Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/tiwoo-branch-ui-browser.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tiwoo-branch-browser
+          cd /tmp/tiwoo-branch-browser
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright@1.55.0
+          npx playwright install --with-deps chromium
+
+      - name: Create exact branch UI harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/tiwoo-branch-browser
+          cat > admin-ai-profiles.js <<'JS'
+          (()=>{
+            'use strict';
+            if(window.__tiwooAdminAiProfiles==='2026-09-15-v12')return;
+            window.__tiwooAdminAiProfiles='2026-09-15-v12';
+            const state={profiles:null,usage:null,profilesPromise:null,usagePromise:null};
+            const byId=id=>document.getElementById(id);
+            const safe=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            const nameForKey=key=>key==='lina'?'Lina':'Luna';
+            const isAiView=view=>['luna','lina','tiwoo-context','ai-usage'].includes(view);
+            const fmt=n=>Number(n||0).toLocaleString('tr-TR');
+            const featureLabel=f=>({dm:'DM',mention:'Mention',autonomous:'Otonom',memory:'Hafıza',tool_router:'Tool Router'}[f]||String(f||''));
+
+            function ensureStyle(){
+              if(byId('bot-profile-grid-style'))return;
+              const style=document.createElement('style');style.id='bot-profile-grid-style';
+              style.textContent=`
+                .bot-profile-stack{display:grid;grid-template-columns:1fr;gap:10px}.bot-profile-card{min-width:0}
+                .bot-profile-card .panel-head{padding-top:10px;padding-bottom:10px}.bot-profile-card .section{padding-top:10px;padding-bottom:10px}
+                .bot-platform-widget{border-color:color-mix(in srgb,#0ea5e9 38%,var(--line))}.bot-platform-widget .panel-head{background:color-mix(in srgb,#0ea5e9 7%,transparent)}
+                .bot-profile-page-actions,.bot-platform-actions,.ai-usage-actions,.ollama-key-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:10px}
+                .bot-profile-note,.bot-char-count{color:var(--muted);font-size:12px;line-height:1.4}.bot-profile-scope{display:inline-flex;margin-top:5px}
+                .bot-system-text{min-height:250px!important;max-height:430px;resize:vertical}.bot-autonomous-text{min-height:130px!important;max-height:300px;resize:vertical}.bot-platform-widget textarea{min-height:110px!important}.bot-field-meta{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-top:6px}.bot-secondary-field{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+                .ai-usage-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}.ai-usage-stat{padding:14px;min-width:0}.ai-usage-stat b{display:block;font-size:22px;margin-top:5px;overflow-wrap:anywhere}
+                .ai-usage-table-wrap{overflow:auto;overscroll-behavior-inline:contain}.ai-usage-table{width:100%;border-collapse:collapse;min-width:680px}.ai-usage-table th,.ai-usage-table td{text-align:left;padding:10px 9px;border-bottom:1px solid var(--line);white-space:nowrap}.ai-usage-table th{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}.ai-usage-table td{font-size:13px}
+                .ollama-key-panel{margin-bottom:14px}.ollama-key-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end}.ollama-key-status{font-size:12px;color:var(--muted);margin-top:6px}
+                @media(max-width:900px){.ai-usage-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.ollama-key-grid{grid-template-columns:1fr}}
+                @media(max-width:820px){.bot-profile-page-actions,.bot-platform-actions,.ai-usage-actions,.ollama-key-actions{justify-content:stretch;flex-direction:column}.bot-profile-page-actions .btn,.bot-platform-actions .btn,.ai-usage-actions .btn,.ollama-key-actions .btn{width:100%}.bot-system-text{min-height:220px!important}}
+                @media(max-width:520px){.ai-usage-summary{grid-template-columns:1fr}.bot-field-meta{display:block}.bot-char-count{display:block;margin-top:4px;text-align:right}.ai-usage-table{min-width:620px}}
+              `;
+              document.head.appendChild(style)
+            }
+
+            async function loadBotSettings(){
+              if(state.profiles)return state;
+              if(!state.profilesPromise)state.profilesPromise=api({action:'bot_profiles_get'}).then(result=>{state.profiles=result;return result}).finally(()=>{state.profilesPromise=null});
+              await state.profilesPromise;return state
+            }
+            async function loadUsage(){
+              if(state.usage)return state;
+              if(!state.usagePromise)state.usagePromise=api({action:'bot_usage_get',days:14}).then(result=>{state.usage=result;return result}).finally(()=>{state.usagePromise=null});
+              await state.usagePromise;return state
+            }
+            function profileFor(key){return state.profiles?.config?.[key]||{}}
+            function platformText(){return String(state.profiles?.config?.platformContext||'')}
+            function validate(value,label,max=20000){const text=String(value??'').replace(/\r\n/g,'\n').trim();if(text.length>max)throw Error(`${label} çok uzun.`);return text}
+            function profileInstruction(key){const p=profileFor(key);return [p.identity,p.behavior,p.privacy].map(v=>String(v||'').trim()).filter(Boolean).join('\n\n')}
+            function autonomousPrompt(key){return String(profileFor(key)?.autonomousBehavior||'').trim()}
+            function parsedInstruction(raw){return{identity:validate(raw,'Sistem talimatı',16000),behavior:'',privacy:''}}
+            function updateCounter(key){
+              const input=byId(`${key}SystemInstruction`),counter=byId(`${key}InstructionCount`),autonomous=byId(`${key}AutonomousPrompt`),autonomousCount=byId(`${key}AutonomousCount`);
+              if(input&&counter)counter.textContent=`${String(input.value||'').length.toLocaleString('tr-TR')} / 16.000`;
+              if(autonomous&&autonomousCount)autonomousCount.textContent=`${String(autonomous.value||'').length.toLocaleString('tr-TR')} / 4.000`
+            }
+            function profilePage(key){
+              const name=nameForKey(key),value=profileInstruction(key),autonomous=autonomousPrompt(key);
+              return `<section class="hero"><h2>${name}</h2><p>Botun kalıcı sistem talimatını ve otonom worker sorusunu ayrı yönetin.</p></section><section class="panel bot-profile-card"><div class="panel-head"><div><h2>Sistem Talimatı</h2><p>Başlık veya bölüm adı zorunlu değildir. Kaydedilen metin bot profiline bir kez öğretilir ve profil değişene kadar yeniden kullanılabilir.</p><span class="pill good bot-profile-scope">Tek sistem widgetı</span></div></div><div class="section"><div class="field"><label for="${key}SystemInstruction">${name} sistem talimatı</label><textarea class="code bot-system-text" id="${key}SystemInstruction" spellcheck="false" maxlength="16000" aria-describedby="${key}InstructionHelp ${key}InstructionCount">${safe(value)}</textarea><div class="bot-field-meta"><small class="bot-profile-note" id="${key}InstructionHelp">İstediğiniz yapıda yazabilirsiniz; özel başlıklar zorunlu değildir.</small><small class="bot-char-count" id="${key}InstructionCount" role="status" aria-live="polite">${value.length.toLocaleString('tr-TR')} / 16.000</small></div></div><div class="field bot-secondary-field"><label for="${key}AutonomousPrompt">Otonom worker sorusu / talimatı</label><textarea class="code bot-autonomous-text" id="${key}AutonomousPrompt" spellcheck="false" maxlength="4000" aria-describedby="${key}AutonomousHelp ${key}AutonomousCount">${safe(autonomous)}</textarea><div class="bot-field-meta"><small class="bot-profile-note" id="${key}AutonomousHelp">Saatlik worker modele bu metni görev olarak verir. Sistem talimatının parçası değildir.</small><small class="bot-char-count" id="${key}AutonomousCount" role="status" aria-live="polite">${autonomous.length.toLocaleString('tr-TR')} / 4.000</small></div></div><div class="bot-profile-page-actions"><button type="button" class="btn primary" id="${key}Save">KAYDET</button></div></div></section>`
+            }
+            function platformCard(){return `<section class="panel bot-profile-card bot-platform-widget"><div class="panel-head"><div><h2>Tiwoo Bağlamı</h2><p>Botların ortak platform bilgisi. Araç tanımları bu alana veya sistem talimatına yazılmaz.</p></div></div><div class="section"><div class="field"><label for="botPlatformContext">Kısa Tiwoo bağlamı</label><textarea class="code" id="botPlatformContext" spellcheck="false" maxlength="4000">${safe(platformText())}</textarea><small class="bot-profile-note">Bu alan yalnız ortak ürün bağlamıdır.</small></div><div class="bot-platform-actions"><button type="button" class="btn primary" id="botPlatformSave">KAYDET</button></div></div></section>`}
+            function contextPage(){return `<section class="hero"><h2>Tiwoo Bağlamı</h2><p>Sıkıştırılmış ortak platform bilgisi.</p></section>${platformCard()}`}
+            function ollamaStatus(){const o=state.usage?.ollama||state.profiles?.ollama||{};if(o.source==='vault')return'Vault anahtarı etkin';if(o.source==='environment')return'Environment anahtarı etkin';return'Anahtar yok'}
+            function usagePage(){
+              const rows=Array.isArray(state.usage?.rows)?state.usage.rows:[],totals=rows.reduce((a,r)=>({requests:a.requests+Number(r.requests||0),input:a.input+Number(r.input_tokens||0),output:a.output+Number(r.output_tokens||0),errors:a.errors+Number(r.errors||0)}),{requests:0,input:0,output:0,errors:0});
+              const body=rows.length?rows.map(r=>`<tr><td>${safe(r.usage_date)}</td><td>${safe(r.bot?.handle||'—')}</td><td>${safe(featureLabel(r.feature))}</td><td>${fmt(r.requests)}</td><td>${fmt(r.input_tokens)}</td><td>${fmt(r.output_tokens)}</td><td>${fmt(r.errors)}</td></tr>`).join(''):`<tr><td colspan="7">Henüz kullanım kaydı yok.</td></tr>`;
+              return `<section class="hero"><h2>AI Kullanımı</h2><p>Son ${Number(state.usage?.days||14)} gün için Ollama çağrıları ve token kullanımı.</p></section><section class="panel ollama-key-panel"><div class="panel-head"><div><h2>Ollama API Key</h2><p>Anahtar kaydedildiğinde Supabase Vault kullanılır; kayıtlı anahtar ekrana geri verilmez.</p></div></div><div class="section"><div class="ollama-key-grid"><div class="field"><label for="ollamaApiKey">Yeni API key</label><input type="password" id="ollamaApiKey" autocomplete="new-password" maxlength="4000" placeholder="Yeni anahtarı gir"></div><button type="button" class="btn primary" id="ollamaKeySave">KAYDET</button></div><div class="ollama-key-status">${safe(ollamaStatus())}</div></div></section><div class="ai-usage-summary"><section class="panel ai-usage-stat"><span>İstek</span><b>${fmt(totals.requests)}</b></section><section class="panel ai-usage-stat"><span>Input token</span><b>${fmt(totals.input)}</b></section><section class="panel ai-usage-stat"><span>Output token</span><b>${fmt(totals.output)}</b></section><section class="panel ai-usage-stat"><span>Hata</span><b>${fmt(totals.errors)}</b></section></div><section class="panel"><div class="section ai-usage-table-wrap"><table class="ai-usage-table"><thead><tr><th>Tarih</th><th>Bot</th><th>Kaynak</th><th>İstek</th><th>Input</th><th>Output</th><th>Hata</th></tr></thead><tbody>${body}</tbody></table><div class="ai-usage-actions"><button type="button" class="btn primary" id="aiUsageReload">Yenile</button></div></div></section>`
+            }
+            async function savePage(key){
+              const button=byId(`${key}Save`),input=byId(`${key}SystemInstruction`),autonomous=byId(`${key}AutonomousPrompt`);if(!button||!input||!autonomous)return;button.disabled=true;
+              try{
+                const parts=parsedInstruction(input.value),autonomousBehavior=validate(autonomous.value,'Otonom worker talimatı',4000);
+                const payload={...parts,autonomousBehavior};
+                const result=await api({action:'bot_profile_page_put',botHandle:`@${key}`,...payload});
+                state.profiles=state.profiles||{config:{}};state.profiles.config=state.profiles.config||{};
+                state.profiles.config[key]={...profileFor(key),identity:result.identity??payload.identity,behavior:result.behavior??payload.behavior,privacy:result.privacy??payload.privacy,autonomousBehavior:result.autonomousBehavior??payload.autonomousBehavior};
+                input.value=profileInstruction(key);autonomous.value=autonomousPrompt(key);updateCounter(key);toast(`${nameForKey(key)} ayarları kaydedildi`)
+              }catch(e){toast(e.message)}finally{button.disabled=false}
+            }
+            async function savePlatformContext(){const button=byId('botPlatformSave');if(!button)return;button.disabled=true;try{const platformContext=validate(byId('botPlatformContext')?.value,'Tiwoo platform bağlamı',4000);const result=await api({action:'bot_platform_context_put',platformContext});state.profiles=state.profiles||{config:{}};state.profiles.config=state.profiles.config||{};state.profiles.config.platformContext=result.platformContext??platformContext;toast('Tiwoo platform bağlamı kaydedildi')}catch(e){toast(e.message)}finally{button.disabled=false}}
+            async function saveOllamaKey(){const button=byId('ollamaKeySave'),input=byId('ollamaApiKey');if(!button||!input)return;const key=String(input.value||'').trim();if(key.length<10||key.length>4000){toast('Geçerli bir Ollama API key girin');return}button.disabled=true;try{await api({action:'bot_ollama_key_put',key});input.value='';state.usage=null;await loadUsage();render();toast('Ollama API key Vault içine kaydedildi')}catch(e){input.value='';toast(e.message)}finally{button.disabled=false}}
+            function wireProfile(key){const save=byId(`${key}Save`),input=byId(`${key}SystemInstruction`),autonomous=byId(`${key}AutonomousPrompt`);if(save)save.onclick=()=>savePage(key);if(input)input.oninput=()=>updateCounter(key);if(autonomous)autonomous.oninput=()=>updateCounter(key);updateCounter(key)}
+            function wireContext(){const save=byId('botPlatformSave');if(save)save.onclick=savePlatformContext}
+            function wireUsage(){const reload=byId('aiUsageReload'),save=byId('ollamaKeySave');if(save)save.onclick=saveOllamaKey;if(reload)reload.onclick=async()=>{reload.disabled=true;try{state.usage=null;await loadUsage();render();toast('AI kullanım verisi yenilendi')}catch(e){toast(e.message)}finally{reload.disabled=false}}}
+            function addNav(){const nav=document.querySelector('.nav');if(!nav)return;for(const [key,label,icon] of [['luna','Luna','✦'],['lina','Lina','✦'],['tiwoo-context','Tiwoo Bağlamı','T'],['ai-usage','AI Kullanımı','Σ']]){if(nav.querySelector(`[data-view="${key}"]`))continue;const b=document.createElement('button');b.type='button';b.dataset.view=key;b.innerHTML=`<span class="nav-ico">${icon}</span>${label}`;b.onclick=()=>switchView(key);nav.appendChild(b)}}
+            function loadingLabel(view){if(view==='tiwoo-context')return'Tiwoo bağlamı';if(view==='ai-usage')return'AI kullanım verisi';return`${nameForKey(view)} ayarları`}
+            const baseRender=render;
+            render=function(){
+              if(isAiView(S.view)){
+                ensureStyle();addNav();$$('[data-view]').forEach(b=>b.classList.toggle('on',b.dataset.view===S.view));const root=byId('view');
+                if(S.view==='ai-usage'){
+                  title('AI Kullanımı');if(!state.usage){root.innerHTML=`<div class="panel empty" role="status">${safe(loadingLabel(S.view))} yükleniyor…</div>`;loadUsage().then(()=>render()).catch(e=>{root.innerHTML=`<div class="panel empty">${safe(e.message)}</div>`;toast(e.message)});return}
+                  root.innerHTML=usagePage();wireUsage();return
+                }
+                if(!state.profiles){root.innerHTML=`<div class="panel empty" role="status">${safe(loadingLabel(S.view))} yükleniyor…</div>`;loadBotSettings().then(()=>render()).catch(e=>{root.innerHTML=`<div class="panel empty">${safe(e.message)}</div>`;toast(e.message)});return}
+                if(S.view==='luna'||S.view==='lina'){title(nameForKey(S.view));root.innerHTML=profilePage(S.view);wireProfile(S.view);return}
+                title('Tiwoo Bağlamı');root.innerHTML=contextPage();wireContext();return
+              }
+              baseRender();addNav()
+            };
+            const baseLoad=load;load=async function(){await baseLoad();if(isAiView(S.view)){try{if(S.view==='ai-usage')await loadUsage();else await loadBotSettings();render()}catch(e){toast(e.message)}}};
+            ensureStyle();addNav();const path=String(location.pathname||'').toLowerCase(),direct=window.__tiwooAdminPendingView||(path.endsWith('/ai-usage')?'ai-usage':(path.endsWith('/tiwoo-context')?'tiwoo-context':(path.endsWith('/lina')?'lina':(path.endsWith('/luna')||path.endsWith('/luna-lina')?'luna':''))));if(isAiView(direct)){window.__tiwooAdminPendingView='';S.view=direct;render()}
+          })();
+          JS
+
+          cat > index.html <<'HTML'
+          <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{--line:#ddd;--muted:#666}body{font-family:Arial,sans-serif;margin:0}.nav{display:flex;gap:4px;flex-wrap:wrap;padding:8px}.nav button{padding:8px}.panel,.hero{border:1px solid #ddd;padding:12px;margin:10px}.field{display:grid;gap:6px}textarea,input{box-sizing:border-box;width:100%}.btn{padding:8px 12px}</style></head><body><nav class="nav"></nav><main id="view"></main><script>
+          window.__calls={profiles:0,usage:0,save:0};
+          window.S={view:'luna'};
+          window.$$=s=>Array.from(document.querySelectorAll(s));
+          window.title=t=>{document.title=t};
+          window.toast=m=>{window.__lastToast=String(m)};
+          window.switchView=v=>{S.view=v;render()};
+          window.render=function(){document.getElementById('view').innerHTML='<div>base</div>'};
+          window.load=async function(){};
+          window.api=async function(payload){
+            if(payload.action==='bot_profiles_get'){window.__calls.profiles++;await new Promise(r=>setTimeout(r,180));return{config:{luna:{identity:'Luna system text',behavior:'',privacy:'',autonomousBehavior:'Saatlik görevi kontrol et.'},lina:{identity:'Lina system text',behavior:'',privacy:'',autonomousBehavior:'Gerekli ise eylem yap.'},platformContext:'Tiwoo context'}}}
+            if(payload.action==='bot_usage_get'){window.__calls.usage++;await new Promise(r=>setTimeout(r,120));return{days:14,ollama:{source:'vault'},rows:[{usage_date:'2026-09-15',bot:{handle:'@luna'},feature:'dm',requests:3,input_tokens:120,output_tokens:80,errors:0}]}}
+            if(payload.action==='bot_profile_page_put'){window.__calls.save++;return payload}
+            if(payload.action==='bot_platform_context_put')return payload;
+            if(payload.action==='bot_ollama_key_put')return{ok:true};
+            throw new Error('unexpected '+payload.action)
+          };
+          </script><script src="/admin-ai-profiles.js"></script></body></html>
+          HTML
+
+          cat > test.mjs <<'JS'
+          import { chromium } from 'playwright';
+          import { strict as assert } from 'node:assert';
+          const browser=await chromium.launch({headless:true});
+          const errors=[];
+          try{
+            const page=await browser.newPage({viewport:{width:1280,height:900}});
+            page.on('pageerror',e=>errors.push('pageerror: '+e.message));
+            page.on('console',m=>{if(m.type()==='error')errors.push('console: '+m.text())});
+            await page.goto('http://127.0.0.1:8765/',{waitUntil:'domcontentloaded'});
+            await page.evaluate(()=>{render();render();render()});
+            await page.waitForSelector('#lunaSystemInstruction');
+            assert.equal(await page.evaluate(()=>window.__calls.profiles),1,'rapid renders must share one profiles request');
+            assert.equal(await page.locator('#lunaSystemInstruction').count(),1,'exactly one system instruction widget');
+            assert.equal(await page.locator('#lunaAutonomousPrompt').count(),1,'exactly one autonomous prompt widget');
+            assert.equal(await page.locator('#lunaSave').getAttribute('type'),'button','save button must not submit forms');
+            assert.match(await page.locator('.bot-profile-card').innerText(),/Başlık veya bölüm adı zorunlu değildir/,'heading must be optional');
+            await page.locator('#lunaSystemInstruction').fill('abcd');
+            await page.locator('#lunaAutonomousPrompt').fill('xyz');
+            assert.match(await page.locator('#lunaInstructionCount').innerText(),/^4 \/ 16\.000$/,'system counter updates');
+            assert.match(await page.locator('#lunaAutonomousCount').innerText(),/^3 \/ 4\.000$/,'autonomous counter updates');
+            await page.locator('[data-view="ai-usage"]').click();
+            await page.waitForSelector('.ai-usage-summary');
+            assert.equal(await page.evaluate(()=>window.__calls.usage),1,'usage request should load once');
+            assert.equal(await page.locator('.ai-usage-stat').count(),4,'usage summary renders four stats');
+            assert.equal(await page.locator('#aiUsageReload').getAttribute('type'),'button','reload button must be button');
+            await page.setViewportSize({width:390,height:844});
+            const columns=await page.locator('.ai-usage-summary').evaluate(el=>getComputedStyle(el).gridTemplateColumns);
+            assert.ok(columns.trim().split(/\s+/).length===1,`mobile usage grid must be one column, got ${columns}`);
+            const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth);
+            assert.equal(overflow,false,'page must not create document-level horizontal overflow');
+            assert.deepEqual(errors,[],'no browser console/page errors');
+            console.log(JSON.stringify({ok:true,calls:await page.evaluate(()=>window.__calls),columns,overflow,errors},null,2));
+          } finally {await browser.close()}
+          JS
+
+      - name: Run local HTTP server and real Chromium test
+        working-directory: /tmp/tiwoo-branch-browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8765 --bind 127.0.0.1 >/tmp/tiwoo-branch-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill $server_pid 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8765/ >/dev/null && break; sleep 0.2; done
+          node test.mjs | tee result.log
+
+      - name: Show result
+        if: always()
+        shell: bash
+        run: |
+          cat /tmp/tiwoo-branch-browser/result.log 2>/dev/null || true

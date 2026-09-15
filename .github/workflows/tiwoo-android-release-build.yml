@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import os, re, shlex
+          import os, shlex
           vals={}
           for raw in Path('/tmp/signing/signing.env').read_text().splitlines():
               line=raw.strip()
@@ -125,7 +125,7 @@ jobs:
           BT="$ANDROID_HOME/build-tools/36.0.0"
           mkdir -p /tmp/out
           "$BT/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk /tmp/out/Tiwoo-1.1.3-full-aligned.apk
-          "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$KEY_ALIAS" --ks-pass env:STORE_PASS --key-pass env:KEY_PASS --out /tmp/out/Tiwoo-1.1.3-full-signed.apk /tmp/out/Tiwoo-1.1.3-full-aligned.apk
+          "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$KEY_ALIAS" --ks-pass "pass:$STORE_PASS" --key-pass "pass:$KEY_PASS" --out /tmp/out/Tiwoo-1.1.3-full-signed.apk /tmp/out/Tiwoo-1.1.3-full-aligned.apk
           "$BT/apksigner" verify --verbose /tmp/out/Tiwoo-1.1.3-full-signed.apk
           cp app/build/outputs/bundle/release/app-release.aab /tmp/out/Tiwoo-1.1.3-full-signed.aab
           jarsigner -keystore "$KS" -storepass "$STORE_PASS" -keypass "$KEY_PASS" /tmp/out/Tiwoo-1.1.3-full-signed.aab "$KEY_ALIAS"

@@ -1,6 +1,9 @@
 name: Tiwoo Android Release Build
 
 on:
+  push:
+    paths:
+      - 'triggers/tiwoo-android-build.txt'
   issues:
     types: [opened]
 
@@ -14,7 +17,7 @@ concurrency:
 
 jobs:
   build:
-    if: github.event.issue.user.login == 'ilkerbekmezcii' && github.event.issue.title == '[TIWOO ANDROID BUILD 1.1.3 DIRECT]'
+    if: github.event_name == 'push' || (github.event.issue.user.login == 'ilkerbekmezcii' && github.event.issue.title == '[TIWOO ANDROID BUILD 1.1.3 DIRECT]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -39,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import io, os, tarfile, urllib.request, urllib.error
+          import io, os, tarfile, urllib.request
           repo_api = 'https://api.github.com/repos/ilkerbekmezcii/tiwoo'
           token = None
           for i in range(1, 9):
@@ -122,10 +125,3 @@ jobs:
           path: /tmp/out/*
           if-no-files-found: error
           retention-days: 1
-
-      - name: Report result
-        if: always()
-        uses: actions/github-script@v8
-        with:
-          script: |
-            await github.rest.issues.createComment({owner:context.repo.owner,repo:context.repo.repo,issue_number:context.issue.number,body:`TIWOO_ANDROID_BUILD=${context.job} / ${context.runId}`});

@@ -1,0 +1,36 @@
+name: Codespace Partner Center inspect temp
+
+on:
+  push:
+    paths:
+      - '.github/workflows/codespace-partner-inspect-temp.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.TEMP_CODESPACE_TOKEN }}
+      CODESPACE_NAME: tiwoo-private-6v9v9jww67vj24v4q
+    steps:
+      - name: Inspect browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh codespace ssh -c "$CODESPACE_NAME" 'bash -lc '\''
+            set -euo pipefail
+            cd "$HOME/.partner-browser-tools"
+            node - <<"NODE"
+            const { chromium } = require("playwright");
+            (async()=>{
+              const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+              const contexts = browser.contexts();
+              const pages = contexts.flatMap(c=>c.pages());
+              console.log(JSON.stringify({pageCount:pages.length,pages:await Promise.all(pages.map(async p=>({url:p.url(),title:await p.title().catch(()=>""),text:(await p.locator("body").innerText().catch(()=>"")).slice(0,12000)})))},null,2));
+              await browser.close();
+            })().catch(e=>{console.error(e);process.exit(1)});
+            NODE
+          '\'''

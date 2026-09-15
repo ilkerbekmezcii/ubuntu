@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -33,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, pathlib, urllib.parse, urllib.request
+          import json, os, pathlib, urllib.parse, urllib.request, urllib.error
           oidc=os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']+'&audience='+urllib.parse.quote(os.environ['PAYLOAD_AUD'])
           req=urllib.request.Request(oidc,headers={'Authorization':'bearer '+os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
           with urllib.request.urlopen(req,timeout=30) as r:
@@ -41,7 +41,11 @@ jobs:
           base=os.environ['PAYLOAD_URL']
           def get(name):
               req=urllib.request.Request(base+'?file='+urllib.parse.quote(name),headers={'Authorization':'Bearer '+token})
-              with urllib.request.urlopen(req,timeout=60) as r:return r.read()
+              try:
+                  with urllib.request.urlopen(req,timeout=60) as r:return r.read()
+              except urllib.error.HTTPError as e:
+                  body=e.read().decode('utf-8','replace')[:1000]
+                  raise RuntimeError(f'payload_http_{e.code}: {body}') from None
           manifest=json.loads(get('manifest'))
           files=manifest['files']
           root=pathlib.Path('/tmp/tiwoo')

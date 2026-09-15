@@ -40,7 +40,7 @@ jobs:
           set -euo pipefail
           cat > /tmp/bootstrap-partner-browser.sh <<'SCRIPT'
           #!/usr/bin/env bash
-          set -euo pipefail
+          set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           if ! command -v Xvfb >/dev/null || ! command -v x11vnc >/dev/null || ! command -v websockify >/dev/null; then
             sudo apt-get update -y
@@ -52,9 +52,11 @@ jobs:
           fi
           mkdir -p "$HOME/.partner-browser-tools" "$HOME/.partner-browser-profile"
           cd "$HOME/.partner-browser-tools"
-          if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
-          if [ ! -d node_modules/playwright ]; then npm install --silent playwright >/dev/null; fi
-          npx playwright install chromium >/dev/null
+          if [ ! -f package.json ]; then
+            printf '%s\n' '{"name":"partner-browser-tools","private":true,"version":"1.0.0"}' > package.json
+          fi
+          if [ ! -d node_modules/playwright ]; then npm install --silent playwright; fi
+          npx playwright install chromium
           CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())")
           pkill -f 'Xvfb :99' || true
           pkill -f 'x11vnc.*5900' || true
@@ -64,7 +66,7 @@ jobs:
           sleep 1
           DISPLAY=:99 nohup fluxbox >"$HOME/.partner-fluxbox.log" 2>&1 </dev/null &
           DISPLAY=:99 nohup "$CHROME" --no-sandbox --disable-dev-shm-usage --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins='*' --user-data-dir="$HOME/.partner-browser-profile" --window-size=1440,900 'https://partner.microsoft.com/dashboard' >"$HOME/.partner-chromium.log" 2>&1 </dev/null &
-          sleep 3
+          sleep 4
           nohup x11vnc -display :99 -localhost -forever -shared -nopw -rfbport 5900 >"$HOME/.partner-x11vnc.log" 2>&1 </dev/null &
           nohup websockify --web=/usr/share/novnc/ 0.0.0.0:6080 127.0.0.1:5900 >"$HOME/.partner-novnc.log" 2>&1 </dev/null &
           sleep 2

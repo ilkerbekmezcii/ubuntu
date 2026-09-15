@@ -1,0 +1,86 @@
+name: Codespace Partner Center browser temp
+
+on:
+  push:
+    paths:
+      - '.github/workflows/codespace-partner-browser-temp.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Browser action
+        required: true
+        default: bootstrap
+        type: choice
+        options:
+          - bootstrap
+          - status
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GHHTTP_SECRET_1 }}
+      CODESPACE_NAME: tiwoo-private-6v9v9jww67vj24v4q
+    steps:
+      - name: Verify Codespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          gh codespace view -c "$CODESPACE_NAME" --json name,state,repository,machineDisplayName
+
+      - name: Bootstrap Partner Center browser
+        if: ${{ github.event_name == 'push' || inputs.action == 'bootstrap' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/bootstrap-partner-browser.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          if ! command -v Xvfb >/dev/null || ! command -v x11vnc >/dev/null || ! command -v websockify >/dev/null; then
+            sudo apt-get update -y
+            sudo apt-get install -y xvfb x11vnc fluxbox novnc websockify
+          fi
+          mkdir -p "$HOME/.partner-browser-tools" "$HOME/.partner-browser-profile"
+          cd "$HOME/.partner-browser-tools"
+          if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
+          if [ ! -d node_modules/playwright ]; then npm install --silent playwright >/dev/null; fi
+          npx playwright install chromium >/dev/null
+          CHROME=$(node -e "console.log(require('playwright').chromium.executablePath())")
+          pkill -f 'Xvfb :99' || true
+          pkill -f 'x11vnc.*5900' || true
+          pkill -f 'websockify.*6080' || true
+          pkill -f '.partner-browser-profile' || true
+          nohup Xvfb :99 -screen 0 1440x900x24 >"$HOME/.partner-xvfb.log" 2>&1 </dev/null &
+          sleep 1
+          DISPLAY=:99 nohup fluxbox >"$HOME/.partner-fluxbox.log" 2>&1 </dev/null &
+          DISPLAY=:99 nohup "$CHROME" --no-sandbox --disable-dev-shm-usage --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --remote-allow-origins='*' --user-data-dir="$HOME/.partner-browser-profile" --window-size=1440,900 'https://partner.microsoft.com/dashboard' >"$HOME/.partner-chromium.log" 2>&1 </dev/null &
+          sleep 3
+          nohup x11vnc -display :99 -localhost -forever -shared -nopw -rfbport 5900 >"$HOME/.partner-x11vnc.log" 2>&1 </dev/null &
+          nohup websockify --web=/usr/share/novnc/ 0.0.0.0:6080 127.0.0.1:5900 >"$HOME/.partner-novnc.log" 2>&1 </dev/null &
+          sleep 2
+          curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null
+          curl -fsS http://127.0.0.1:9222/json/version | python3 -c 'import json,sys; j=json.load(sys.stdin); print({"Browser":j.get("Browser"),"webSocketDebuggerUrl":bool(j.get("webSocketDebuggerUrl"))})'
+          SCRIPT
+          chmod +x /tmp/bootstrap-partner-browser.sh
+          gh codespace cp -e -c "$CODESPACE_NAME" /tmp/bootstrap-partner-browser.sh 'remote:~/.bootstrap-partner-browser.sh'
+          gh codespace ssh -c "$CODESPACE_NAME" 'bash -lc '\''chmod +x ~/.bootstrap-partner-browser.sh && ~/.bootstrap-partner-browser.sh'\'''
+          for i in $(seq 1 30); do
+            if gh codespace ports -c "$CODESPACE_NAME" --json sourcePort,visibility --jq '.[] | select(.sourcePort == 6080)' | grep -q .; then break; fi
+            sleep 2
+          done
+          gh codespace ports visibility 6080:private -c "$CODESPACE_NAME"
+          gh codespace ports -c "$CODESPACE_NAME" --json sourcePort,visibility,browseUrl --jq '.[] | select(.sourcePort == 6080)'
+
+      - name: Browser status
+        if: ${{ inputs.action == 'status' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh codespace ssh -c "$CODESPACE_NAME" 'bash -lc '\''curl -fsS http://127.0.0.1:9222/json/version; echo; pgrep -af "Xvfb :99|x11vnc|websockify|partner-browser-profile"'\'''
+          gh codespace ports -c "$CODESPACE_NAME" --json sourcePort,visibility,browseUrl --jq '.[] | select(.sourcePort == 6080)'

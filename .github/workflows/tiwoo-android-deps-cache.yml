@@ -58,6 +58,10 @@ jobs:
               id 'com.android.application' version '8.10.0' apply false
           }
           EOF
+          cat > /tmp/deps/gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx768m -Dfile.encoding=UTF-8
+          EOF
           cat > /tmp/deps/app/build.gradle <<'EOF'
           plugins { id 'com.android.application' }
           android {

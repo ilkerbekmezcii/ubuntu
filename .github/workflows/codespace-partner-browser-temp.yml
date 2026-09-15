@@ -46,6 +46,10 @@ jobs:
             sudo apt-get update -y
             sudo apt-get install -y xvfb x11vnc fluxbox novnc websockify
           fi
+          if ! command -v npm >/dev/null; then
+            sudo apt-get update -y
+            sudo apt-get install -y npm
+          fi
           mkdir -p "$HOME/.partner-browser-tools" "$HOME/.partner-browser-profile"
           cd "$HOME/.partner-browser-tools"
           if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
